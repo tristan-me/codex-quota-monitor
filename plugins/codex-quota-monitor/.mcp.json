@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "quota_monitor": {
+      "command": "node",
+      "args": [
+        "server/index.mjs"
+      ],
+      "cwd": "."
+    }
+  }
+}

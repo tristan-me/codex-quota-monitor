@@ -1,0 +1,35 @@
+name: Test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    name: Node ${{ matrix.node-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version:
+          - '22.13.0'
+          - '24.x'
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: Run tests
+        working-directory: plugins/codex-quota-monitor
+        shell: bash
+        run: |
+          if [[ "${{ matrix.node-version }}" == "22.13.0" ]]; then
+            node --experimental-sqlite --test tests/*.test.mjs
+          else
+            node --test tests/*.test.mjs
+          fi

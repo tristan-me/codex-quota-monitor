@@ -1,0 +1,39 @@
+{
+  "name": "codex-quota-monitor",
+  "version": "0.2.0",
+  "description": "Local Codex quota windows, transparent session estimates, and cost-aware model defaults.",
+  "author": {
+    "name": "Quanli Li",
+    "url": "https://github.com/tristan-me"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Codex Quota Monitor",
+    "shortDescription": "本地会话额度估算与实时速率",
+    "longDescription": "Track official account quota windows and explicitly estimated session consumption with local refreshes, reset countdowns, and opt-in future model defaults.",
+    "developerName": "Quanli Li",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "打开 Codex 额度监控器。",
+      "查询会话额度消耗。"
+    ],
+    "brandColor": "#79E4BE",
+    "websiteURL": "https://github.com/tristan-me/codex-quota-monitor"
+  },
+  "mcpServers": "./.mcp.json",
+  "license": "MIT",
+  "keywords": [
+    "codex",
+    "quota",
+    "usage",
+    "sessions",
+    "local-first"
+  ],
+  "repository": "https://github.com/tristan-me/codex-quota-monitor",
+  "homepage": "https://github.com/tristan-me/codex-quota-monitor"
+}

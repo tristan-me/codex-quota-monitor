@@ -1,0 +1,303 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <meta name="description" content="Codex 会话额度和速率的本地估算仪表板">
+    <title>Codex 额度监控器</title>
+    <link rel="stylesheet" href="./style.css">
+    <script defer src="./app.js"></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">跳到主要内容</a>
+    <div class="app-shell">
+      <header class="topbar">
+        <a class="brand" href="#main" aria-label="Codex 额度监控器首页">
+          <span class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></span>
+          <span class="brand-copy">
+            <span class="eyebrow">LOCAL OBSERVER</span>
+            <span class="brand-title">Codex 额度监控器</span>
+          </span>
+        </a>
+        <div class="topbar-actions">
+          <span id="connectionPill" class="connection-pill is-loading" role="status" aria-live="polite">
+            <span class="connection-dot" aria-hidden="true"></span>
+            <span id="connectionText">连接中</span>
+          </span>
+          <button id="refreshBtn" class="button button-quiet" type="button">立即刷新</button>
+          <a class="icon-link" href="#settings" aria-label="跳到设置">设置</a>
+        </div>
+      </header>
+
+      <div id="globalError" class="notice notice-error" role="alert" hidden>
+        <span class="notice-icon" aria-hidden="true">!</span>
+        <span id="globalErrorText">暂时无法读取快照。</span>
+        <button id="retryBtn" class="button button-small button-danger" type="button">重试</button>
+      </div>
+
+      <div id="globalStatus" class="status-line" role="status" aria-live="polite">
+        正在读取本地快照…
+      </div>
+
+      <main id="main">
+        <div id="compactStatus" class="compact-status" role="status" aria-live="polite" hidden>
+          <span class="compact-status-dot" aria-hidden="true"></span>
+          <span id="compactStatusText">正在读取本地快照…</span>
+        </div>
+
+        <section class="hero full-dashboard" aria-labelledby="overview-title">
+          <div class="hero-copy">
+            <p class="section-kicker">额度观察 · 本地估算</p>
+            <h1 id="overview-title">看见每个会话的消耗节奏</h1>
+            <p class="hero-description">
+              仪表板只读取本地插件 API 的快照，按会话样本估算消耗和速率。运行中的任务会继续由 Codex 自己管理。
+            </p>
+            <p class="hero-note">
+              <span class="note-mark" aria-hidden="true">i</span>
+              每会话百分比和速度是透明标注的估算值；三位小数是显示精度，不代表官方精确拆账。账户归因可能按本机 token 占比假设分摊，可能混入其他设备消耗。
+            </p>
+          </div>
+          <div class="hero-metrics" aria-label="概览指标">
+            <article class="metric-card metric-card-accent">
+              <span class="metric-label">活跃根会话</span>
+              <strong id="activeSessionCount" class="metric-value">—</strong>
+              <span id="activeSessionDetail" class="metric-detail">等待会话数据</span>
+            </article>
+            <article class="metric-card">
+              <span class="metric-label">未知状态</span>
+              <strong id="unknownSessionCount" class="metric-value">—</strong>
+              <span id="unknownSessionDetail" class="metric-detail">等待快照</span>
+            </article>
+            <article class="metric-card">
+              <span class="metric-label">已消耗估算</span>
+              <strong id="estimatedTotal" class="metric-value">—</strong>
+              <span id="estimatedTotalDetail" class="metric-detail">等待归因样本</span>
+            </article>
+            <article class="metric-card">
+              <span class="metric-label">下次重置</span>
+              <strong id="nextResetValue" class="metric-value">—</strong>
+              <span id="nextResetDetail" class="metric-detail">等待官方倒计时</span>
+            </article>
+          </div>
+        </section>
+
+        <div class="dashboard-grid full-dashboard">
+          <section class="panel sessions-panel panel-wide" aria-labelledby="sessions-title">
+            <div class="panel-header">
+              <div>
+                <p class="section-kicker">LIVE SESSIONS</p>
+                <h2 id="sessions-title">会话消耗</h2>
+              </div>
+              <span id="sessionRefreshHint" class="panel-header-meta">每 5 秒更新</span>
+            </div>
+            <div id="sessionSummary" class="summary-strip" aria-live="polite">
+              <span class="summary-dot" aria-hidden="true"></span>
+              <span id="sessionSummaryText">正在等待会话快照</span>
+            </div>
+            <div id="sessionList" class="session-list" role="list" aria-label="Codex 会话列表"></div>
+          </section>
+
+          <section class="panel account-panel" aria-labelledby="account-title">
+            <div class="panel-header">
+              <div>
+                <p class="section-kicker">ACCOUNT WINDOWS</p>
+                <h2 id="account-title">账户窗口</h2>
+              </div>
+              <span id="accountFetchedAt" class="panel-header-meta">等待读取</span>
+            </div>
+            <div id="accountError" class="inline-error" role="alert" hidden></div>
+            <div id="accountWindows" class="quota-window-list"></div>
+          </section>
+
+          <section class="panel attribution-panel" aria-labelledby="attribution-title">
+            <div class="panel-header">
+              <div>
+                <p class="section-kicker">ATTRIBUTION</p>
+                <h2 id="attribution-title">额度归因</h2>
+              </div>
+              <span id="attributionSince" class="panel-header-meta">等待样本</span>
+            </div>
+            <div class="attribution-total">
+              <span>已归因比例</span>
+              <strong id="attributionTotal">—</strong>
+            </div>
+            <div class="attribution-bars" aria-label="额度归因明细">
+              <div class="bar-row">
+                <div class="bar-label"><span class="legend-dot dot-observed" aria-hidden="true"></span><span>已观察</span><strong id="observedPercent">—</strong></div>
+                <div class="progress-track"><span id="observedBar" class="progress-fill fill-observed" hidden></span></div>
+              </div>
+              <div class="bar-row">
+                <div class="bar-label"><span class="legend-dot dot-estimated" aria-hidden="true"></span><span>会话估算</span><strong id="estimatedPercent">—</strong></div>
+                <div class="progress-track"><span id="estimatedBar" class="progress-fill fill-estimated" hidden></span></div>
+              </div>
+              <div class="bar-row">
+                <div class="bar-label"><span class="legend-dot dot-unattributed" aria-hidden="true"></span><span>未归因</span><strong id="unattributedPercent">—</strong></div>
+                <div class="progress-track"><span id="unattributedBar" class="progress-fill fill-unattributed" hidden></span></div>
+              </div>
+            </div>
+            <p id="attributionWindow" class="muted-copy">尚未收到窗口范围。</p>
+            <p class="small-note">归因可能使用本机 token 占比假设分摊，可能混入其他设备消耗。</p>
+          </section>
+
+          <section class="panel trend-panel panel-wide" aria-labelledby="trend-title">
+            <div class="panel-header">
+              <div>
+                <p class="section-kicker">QUOTA TREND</p>
+                <h2 id="trend-title">账户余量趋势</h2>
+              </div>
+              <span id="trendLatest" class="panel-header-meta">等待历史样本</span>
+            </div>
+            <div id="trendChart" class="trend-chart" role="img" aria-label="账户余量趋势图"></div>
+            <p class="chart-caption">趋势来自本地快照中的 remainingPercent，仅用于观察变化。</p>
+          </section>
+
+          <section class="panel recommendation-panel" aria-labelledby="recommendation-title">
+            <div class="panel-header">
+              <div>
+                <p class="section-kicker">MODEL GUIDE</p>
+                <h2 id="recommendation-title">模式建议</h2>
+              </div>
+              <span class="recommendation-badge">默认仅建议</span>
+            </div>
+            <div class="recommendation-main">
+              <span class="recommendation-label">当前推荐</span>
+              <strong id="recommendedModel">等待建议</strong>
+              <span id="recommendedEffort" class="effort-chip">—</span>
+            </div>
+            <p id="recommendationReason" class="muted-copy">后端返回建议后会显示理由和来源。</p>
+            <p id="recommendationSource" class="source-copy">来源：等待数据</p>
+            <div id="recommendationError" class="inline-error" role="alert" hidden></div>
+            <div class="recommendation-controls">
+              <label class="field-label" for="objectiveSelect">偏好目标</label>
+              <select id="objectiveSelect" class="select-control">
+                <option value="economy">economy · 节省额度</option>
+                <option value="balanced">balanced · 平衡</option>
+                <option value="quality">quality · 优先质量</option>
+              </select>
+              <label class="check-row" for="autoSwitchCheckbox">
+                <input id="autoSwitchCheckbox" type="checkbox">
+                <span>允许自动为新任务设置默认模型（影响后续默认值）</span>
+              </label>
+              <p class="small-note">开启后只影响后续默认值；正在运行的任务不会被切换。</p>
+              <p class="small-note">关闭自动切换仅停止后续改动，不自动撤回最后一次默认值。恢复操作会核对当前设置；如果你已另行修改 model，后端会拒绝覆盖。</p>
+              <div class="restore-controls">
+                <button id="restoreDefaultsBtn" class="button button-quiet" type="button">恢复接管前的默认模型</button>
+                <span id="restoreDefaultsStatus" class="restore-status" role="status" aria-live="polite">需要时手动恢复</span>
+              </div>
+              <div id="restoreDefaultsError" class="inline-error restore-error" role="alert" hidden></div>
+            </div>
+          </section>
+
+          <section class="panel reset-panel" aria-labelledby="reset-title">
+            <div class="panel-header">
+              <div>
+                <p class="section-kicker">RESET RADAR</p>
+                <h2 id="reset-title">重置预测</h2>
+              </div>
+              <span class="radar-pulse" aria-label="仅供参考" title="仅供参考"><span aria-hidden="true"></span>估算</span>
+            </div>
+            <div class="reset-grid">
+              <div class="reset-stat">
+                <span>官方倒计时</span>
+                <strong id="officialResetCountdown">等待数据</strong>
+                <small id="officialResetAt">—</small>
+              </div>
+              <div class="reset-stat">
+                <span>当前速率耗尽估计</span>
+                <strong id="exhaustionEstimate">等待速率样本</strong>
+                <small id="exhaustionAt">—</small>
+              </div>
+              <div class="reset-stat reset-stat-unknown">
+                <span>突发重置</span>
+                <strong id="unexpectedReset">未知</strong>
+                <small>官方未提供可预测信号</small>
+              </div>
+            </div>
+            <div class="reference-links" aria-label="外部参考">
+              <a href="https://codex-reset.com/zh/" target="_blank" rel="noopener noreferrer">Codex Reset ↗</a>
+              <a href="https://codexradar.com/#model-ratings" target="_blank" rel="noopener noreferrer">Codex Radar ↗</a>
+            </div>
+          </section>
+
+          <section id="settings" class="panel settings-panel panel-wide" aria-labelledby="settings-title">
+            <div class="panel-header">
+              <div>
+                <p class="section-kicker">POLLING &amp; COST</p>
+                <h2 id="settings-title">刷新设置与成本</h2>
+              </div>
+              <span id="settingsSaveStatus" class="panel-header-meta" role="status" aria-live="polite">本地读取中</span>
+            </div>
+            <div class="settings-layout">
+              <div class="settings-form" aria-label="刷新设置">
+                <div class="field-group">
+                  <label class="field-label" for="pollSecondsInput">本地快照频率</label>
+                  <div class="input-with-unit"><input id="pollSecondsInput" type="number" min="2" max="300" step="1" inputmode="numeric"><span>秒</span></div>
+                  <p class="field-help">控制本地 GET /api/snapshot 的刷新间隔，范围 2–300 秒。</p>
+                </div>
+                <div class="field-group">
+                  <label class="field-label" for="quotaPollSecondsInput">账户额度频率</label>
+                  <div class="input-with-unit"><input id="quotaPollSecondsInput" type="number" min="5" max="3600" step="1" inputmode="numeric"><span>秒</span></div>
+                  <p class="field-help">控制后端远程额度读取的最低间隔，范围 5–3600 秒。</p>
+                </div>
+                <label class="check-row check-row-muted" for="pausedCheckbox">
+                  <input id="pausedCheckbox" type="checkbox">
+                  <span>暂停后台远程额度读取</span>
+                </label>
+                <p class="small-note">本页面没有 Codex 原生窗口启动回调；打开窗口后才会开始本地轮询。</p>
+                <div class="reminder-controls">
+                  <button id="restoreDisclaimerBtn" class="button button-quiet" type="button">恢复启动提醒</button>
+                  <span id="restoreDisclaimerStatus" class="restore-status" role="status" aria-live="polite">当前提醒状态由本地设置控制</span>
+                </div>
+                <div id="restoreDisclaimerError" class="inline-error restore-error" role="alert" hidden></div>
+              </div>
+              <div class="cost-overview">
+                <p class="cost-intro">每次更新的成本</p>
+                <p class="cost-explanation" id="costExplanation">一次本地快照读取；远程额度读取按账户额度频率执行。本面板不发起额外 LLM 调用。</p>
+                <div class="cost-metrics">
+                  <div class="cost-metric"><span>本地读取</span><strong id="localReads">—</strong></div>
+                  <div class="cost-metric"><span>远程读取</span><strong id="remoteReads">—</strong></div>
+                  <div class="cost-metric"><span>最近本地耗时</span><strong id="lastLocalMs">—</strong></div>
+                  <div class="cost-metric"><span>每小时请求</span><strong id="requestsPerHour">—</strong></div>
+                  <div class="cost-metric"><span>LLM 调用</span><strong id="llmCalls">—</strong></div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section class="panel diagnostics-panel" aria-labelledby="diagnostics-title">
+            <div class="panel-header">
+              <div>
+                <p class="section-kicker">HEALTH</p>
+                <h2 id="diagnostics-title">诊断</h2>
+              </div>
+              <span id="snapshotVersion" class="panel-header-meta">版本 —</span>
+            </div>
+            <div id="diagnosticsList" class="diagnostics-list"></div>
+          </section>
+        </div>
+      </main>
+
+      <footer class="footer full-dashboard">
+        <span>本地插件 UI · 估算透明标注</span>
+        <span id="footerUpdatedAt">尚未同步</span>
+      </footer>
+    </div>
+
+    <div id="disclaimerModal" class="modal" hidden aria-hidden="true">
+      <div class="modal-backdrop" aria-hidden="true"></div>
+      <section class="modal-card" role="dialog" aria-modal="true" aria-labelledby="disclaimerTitle" aria-describedby="disclaimerText">
+        <div class="modal-icon" aria-hidden="true">◎</div>
+        <p class="section-kicker">首次打开说明</p>
+        <h2 id="disclaimerTitle">先了解估算边界</h2>
+        <p id="disclaimerText" class="disclaimer-text">需要说明：每会话百分比和速度仍是透明标注的估算值，而不是官方提供的精确拆账或未来保证。</p>
+        <label class="check-row modal-check" for="doNotRemindCheckbox">
+          <input id="doNotRemindCheckbox" type="checkbox">
+          <span>不再提醒</span>
+        </label>
+        <div id="disclaimerError" class="inline-error disclaimer-error" role="alert" hidden></div>
+        <button id="confirmDisclaimerBtn" class="button button-primary modal-confirm" type="button">确认</button>
+      </section>
+    </div>
+  </body>
+</html>
