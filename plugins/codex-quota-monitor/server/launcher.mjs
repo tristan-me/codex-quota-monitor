@@ -33,6 +33,8 @@ async function existing() {
       response.ok &&
       body.app === "codex-quota-monitor" &&
       body.version === "0.2.0" &&
+      body.mode === "live" &&
+      body.dataSchema === 2 &&
       body.ready !== false
     )
       return record;
@@ -241,7 +243,7 @@ export async function launch({ openBrowser = false, compact = false } = {}) {
           : "xdg-open";
     spawn(command, [url], { stdio: "ignore" }).on("error", () => {});
   }
-  return { url, version: "0.2.0" };
+  return { url, version: "0.2.0", mode: "live", dataSchema: 2 };
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {

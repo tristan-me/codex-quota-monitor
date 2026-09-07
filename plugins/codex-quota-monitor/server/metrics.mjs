@@ -3,10 +3,14 @@ export function normalizeWindows(result, at = Date.now()) {
   const legacy = result?.rateLimits
     ? { [result.rateLimits.limitId || "codex"]: result.rateLimits }
     : {};
-  const buckets = { ...legacy, ...(result?.rateLimitsByLimitId || {}) };
-  for (const [id, bucket] of Object.entries(buckets))
-    if (!bucket) buckets[id] = legacy[id];
-  return Object.entries(buckets).flatMap(([bucket, b]) =>
+  const buckets = { ...legacy };
+  for (const [id, bucket] of Object.entries(
+    result?.rateLimitsByLimitId || {},
+  )) {
+    if (bucket && typeof bucket === "object")
+      buckets[id] = { ...legacy[id], ...bucket };
+  }
+  const windows = Object.entries(buckets).flatMap(([bucket, b]) =>
     ["primary", "secondary"].flatMap((slot) => {
       const w = b?.[slot];
       if (
@@ -22,13 +26,35 @@ export function normalizeWindows(result, at = Date.now()) {
           label: `${b.limitName || bucket} · ${w.windowDurationMins === 10080 ? "周额度" : `${w.windowDurationMins ?? "?"} 分钟窗口`}`,
           usedPercent: w.usedPercent,
           remainingPercent: Math.max(0, 100 - w.usedPercent),
-          resetsAt: typeof w.resetsAt === "number" ? w.resetsAt * 1000 : null,
+          resetsAt:
+            typeof w.resetsAt === "number" &&
+            Number.isFinite(w.resetsAt) &&
+            w.resetsAt > 0 &&
+            w.resetsAt < 100_000_000_000
+              ? w.resetsAt * 1000
+              : null,
+          planType: typeof b.planType === "string" ? b.planType : null,
+          source: "account/rateLimits/read",
           windowMinutes: w.windowDurationMins,
           observedAt: at,
         },
       ];
     }),
   );
+  // The legacy view can include a weekly window omitted from a partial multi-bucket view.
+  if (result?.rateLimitsByLimitId && result?.rateLimits) {
+    for (const old of normalizeWindows({ rateLimits: result.rateLimits }, at)) {
+      if (
+        !windows.some(
+          (w) =>
+            w.bucket === old.bucket && w.windowMinutes === old.windowMinutes,
+        )
+      ) {
+        windows.push({ ...old, id: old.id.replace(":", ":legacy-") });
+      }
+    }
+  }
+  return windows;
 }
 export function mainWindow(windows) {
   return (
@@ -41,6 +67,36 @@ export function mainWindow(windows) {
     windows.find((w) => w.bucket === "codex") ??
     null
   );
+}
+export function accountDisplay(result, sampledAt = Date.now()) {
+  const windows = normalizeWindows(result, sampledAt);
+  const selected = mainWindow(windows);
+  const planType = selected?.planType ?? result?.rateLimits?.planType ?? null;
+  return {
+    windows,
+    summary: selected
+      ? {
+          usedPercent: selected.usedPercent,
+          remainingPercent: selected.remainingPercent,
+          windowLabel: selected.label,
+          windowMinutes: selected.windowMinutes,
+          resetsAt: selected.resetsAt,
+          observedAt: sampledAt,
+          source: "account/rateLimits/read",
+        }
+      : null,
+    plan: {
+      type: planType,
+      multiplier: null,
+      source: "account/rateLimits/read",
+      detail:
+        planType === "pro"
+          ? "官方接口标明 Pro，未区分 5x/20x；账户百分比及重置时间已针对当前订阅计算，无需手动选择套餐。"
+          : "使用当前登录账户的官方额度窗口；不根据本机模型配置推断套餐。",
+    },
+    error: null,
+    lastFetchedAt: sampledAt,
+  };
 }
 export function groupThreads(threads) {
   const byId = new Map(threads.map((t) => [t.id, t]));
@@ -168,8 +224,9 @@ export class Estimator {
         const starts = g.members
           .filter((t) => t.status === "active" && t.startedAt)
           .map((t) => t.startedAt);
-        const started =
-          g.startedAt || (starts.length ? Math.min(...starts) : null);
+        const started = starts.length
+          ? Math.min(...starts)
+          : g.startedAt || null;
         return {
           id: g.id,
           title: g.title || g.id,

@@ -359,6 +359,138 @@ button:disabled {
   font-size: 12px;
 }
 
+.mode-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 42px;
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  font-size: 11px;
+}
+
+.mode-banner-mark {
+  display: block;
+  width: 9px;
+  height: 9px;
+  flex: 0 0 auto;
+  background: var(--muted);
+  border-radius: 50%;
+}
+
+.mode-banner-copy {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+}
+
+.mode-banner-copy strong {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 680;
+}
+
+.mode-banner-copy span {
+  overflow: hidden;
+  color: var(--text-soft);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mode-live {
+  background: rgba(57, 191, 153, 0.08);
+  border-color: rgba(100, 228, 192, 0.23);
+}
+
+.mode-live .mode-banner-mark { background: var(--accent); box-shadow: 0 0 0 4px rgba(100, 228, 192, 0.1); }
+.mode-live.is-stale { background: rgba(193, 136, 47, 0.11); border-color: rgba(244, 199, 115, 0.28); }
+.mode-live.is-stale .mode-banner-mark { background: var(--warning); box-shadow: 0 0 0 4px rgba(244, 199, 115, 0.1); }
+.mode-live.is-stale .mode-banner-copy strong { color: #ffe0a2; }
+.mode-demo { background: rgba(193, 136, 47, 0.12); border-color: rgba(244, 199, 115, 0.33); }
+.mode-demo .mode-banner-mark { background: var(--warning); box-shadow: 0 0 0 4px rgba(244, 199, 115, 0.1); }
+.mode-demo .mode-banner-copy strong { color: #ffe0a2; }
+.mode-offline { background: rgba(189, 57, 83, 0.14); border-color: rgba(255, 127, 148, 0.32); }
+.mode-offline .mode-banner-mark { background: var(--danger); box-shadow: 0 0 0 4px rgba(255, 127, 148, 0.11); }
+.mode-offline .mode-banner-copy strong { color: #ffd0d6; }
+.mode-unknown { background: rgba(126, 149, 193, 0.08); }
+
+.demo-watermark {
+  position: fixed;
+  z-index: 2;
+  top: 104px;
+  right: -56px;
+  width: 230px;
+  padding: 8px 0;
+  color: rgba(244, 199, 115, 0.2);
+  border-top: 1px solid rgba(244, 199, 115, 0.16);
+  border-bottom: 1px solid rgba(244, 199, 115, 0.16);
+  font-size: 15px;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  line-height: 1.35;
+  text-align: center;
+  transform: rotate(35deg);
+  pointer-events: none;
+  user-select: none;
+}
+
+.demo-watermark span {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.offline-panel {
+  display: flex;
+  align-items: flex-start;
+  gap: 17px;
+  margin-bottom: 18px;
+  padding: 30px 32px;
+  background: linear-gradient(145deg, rgba(65, 27, 42, 0.84), rgba(26, 20, 35, 0.9));
+  border: 1px solid rgba(255, 127, 148, 0.3);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+}
+
+.offline-icon {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  place-items: center;
+  color: #27090f;
+  background: var(--danger);
+  border-radius: 11px;
+  font-size: 19px;
+  font-weight: 800;
+}
+
+.offline-panel h2 {
+  margin: 3px 0 7px;
+  color: #ffe4e8;
+  font-size: 20px;
+  letter-spacing: -0.025em;
+}
+
+.offline-panel p:last-child {
+  max-width: 720px;
+  margin: 0;
+  color: #dcbfc6;
+  font-size: 12px;
+  line-height: 1.75;
+}
+
+.offline-panel code {
+  padding: 2px 5px;
+  color: #ffe4e8;
+  background: rgba(255, 127, 148, 0.12);
+  border-radius: 5px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+}
+
 .hero {
   display: grid;
   grid-template-columns: minmax(0, 1.05fr) minmax(420px, 0.95fr);
@@ -553,6 +685,29 @@ button:disabled {
   font-size: 12px;
 }
 
+.panel-note {
+  margin: -8px 0 12px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+.freshness-fresh {
+  color: var(--accent) !important;
+}
+
+.freshness-aging {
+  color: var(--warning) !important;
+}
+
+.freshness-stale {
+  color: #ffbdc7 !important;
+}
+
+.freshness-unknown {
+  color: var(--muted) !important;
+}
+
 .session-list {
   display: grid;
   gap: 9px;
@@ -695,6 +850,70 @@ button:disabled {
   min-height: 290px;
 }
 
+.account-plan-card {
+  margin-bottom: 11px;
+  padding: 12px 13px;
+  background: rgba(9, 16, 31, 0.36);
+  border: 1px solid rgba(116, 169, 255, 0.18);
+  border-radius: var(--radius-md);
+}
+
+.account-plan-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.account-plan-heading strong {
+  color: var(--accent-blue);
+  font-size: 16px;
+  font-weight: 680;
+}
+
+.account-plan-card .muted-copy {
+  margin-top: 5px;
+}
+
+.account-plan-card .small-note {
+  margin-top: 8px;
+}
+
+.account-official-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+  margin-bottom: 12px;
+}
+
+.account-official-summary > div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  padding: 9px;
+  background: rgba(100, 228, 192, 0.055);
+  border: 1px solid rgba(100, 228, 192, 0.11);
+  border-radius: 8px;
+}
+
+.account-official-summary span {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.account-official-summary strong {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-official-summary > div:nth-child(2) strong {
+  color: var(--accent);
+}
+
 .quota-window-list {
   display: grid;
   gap: 10px;
@@ -788,6 +1007,12 @@ button:disabled {
   border: 1px solid rgba(255, 127, 148, 0.23);
   border-radius: 8px;
   font-size: 11px;
+}
+
+.inline-warning {
+  color: #ffe0a2;
+  background: rgba(193, 136, 47, 0.12);
+  border-color: rgba(244, 199, 115, 0.28);
 }
 
 .attribution-total {
@@ -1040,6 +1265,10 @@ button:disabled {
   line-height: 1.6;
 }
 
+.demo-settings-note {
+  color: #f1cd8a;
+}
+
 .radar-pulse {
   padding: 4px 8px;
   color: #e5ca90;
@@ -1085,8 +1314,24 @@ button:disabled {
 }
 
 .reset-stat:first-child strong { color: var(--accent-blue); }
+.reset-stat-stale {
+  background: rgba(193, 136, 47, 0.09);
+  border-color: rgba(244, 199, 115, 0.24);
+}
+.reset-stat-stale strong { color: var(--warning) !important; }
 .reset-stat:nth-child(2) strong { color: var(--accent); }
+.reset-stat-estimate {
+  border-style: dashed;
+  opacity: 0.84;
+}
 .reset-stat-unknown strong { color: var(--warning); }
+
+.reset-note {
+  margin: 11px 0 0;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.55;
+}
 
 .reference-links {
   flex-wrap: wrap;
@@ -1484,6 +1729,8 @@ body.compact .app-shell {
 }
 
 body.compact .topbar,
+body.compact #modeBanner,
+body.compact #demoWatermark,
 body.compact #globalError,
 body.compact #globalStatus,
 body.compact .full-dashboard {

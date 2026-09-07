@@ -21,3 +21,7 @@ node --test tests/*.test.mjs
 ```
 
 Loopback network permission is needed by the HTTP tests. CI runs the same suite on Node 22.13.0 and 24.x. Test fixtures contain synthetic IDs and no private conversation data.
+
+## Data-source repair validation
+
+The repair adds tests for official Pro account percentages without manual multipliers, second-to-millisecond reset conversion and Beijing time, partial quota-bucket responses, active-child elapsed time, stale quota gaps, reusable live endpoints, and isolation of demo credentials/state. The complete local suite passes 39 tests. Demo pages are no longer delivered as real-account outputs.

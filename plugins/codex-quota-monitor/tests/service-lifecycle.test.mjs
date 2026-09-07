@@ -67,6 +67,8 @@ test("runtime is published only after collector initialization completes", async
   assert.deepEqual(await health.json(), {
     app: "codex-quota-monitor",
     version: "0.2.0",
+    mode: "live",
+    dataSchema: 2,
     ready: true,
     pid: process.pid,
   });

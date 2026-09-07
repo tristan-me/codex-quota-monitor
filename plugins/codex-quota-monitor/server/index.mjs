@@ -60,6 +60,8 @@ async function handle(m) {
         const s = await localSnapshot();
         value = {
           version: s.version,
+          mode: s.mode,
+          dataSource: s.dataSource,
           capabilities: s.capabilities,
           diagnostics: s.diagnostics,
           accountError: s.account.error,

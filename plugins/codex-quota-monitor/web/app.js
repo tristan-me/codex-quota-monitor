@@ -10,6 +10,8 @@
   const state = {
     snapshot: null,
     error: null,
+    offline: false,
+    mode: 'unknown',
     lastSettingsError: null,
     fetching: false,
     lastUpdatedAt: null,
@@ -134,6 +136,29 @@
     }
   }
 
+  function formatBeijingDateTime(value, fallback = '时间待定') {
+    const date = value instanceof Date ? value : parseDate(value);
+    if (!date) return fallback;
+    try {
+      const parts = new Intl.DateTimeFormat('zh-CN', {
+        timeZone: 'Asia/Shanghai',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hourCycle: 'h23',
+      }).formatToParts(date).reduce((map, part) => {
+        map[part.type] = part.value;
+        return map;
+      }, {});
+      return `${parts.year}年${parts.month}月${parts.day}日 ${parts.hour}时${parts.minute}分${parts.second}秒（北京时间）`;
+    } catch (_error) {
+      return fallback;
+    }
+  }
+
   function formatUpdated(value) {
     const date = value instanceof Date ? value : parseDate(value);
     if (!date) return '尚未同步';
@@ -173,11 +198,13 @@
     return '';
   }
 
+  // Keep the endpoint credential stable while navigating within this page.
+  const accessToken = getTokenFromHash();
+
   function requestHeaders(extra = {}) {
     const headers = new Headers(extra);
     headers.set('Accept', 'application/json');
-    const token = getTokenFromHash();
-    if (token) headers.set('X-Quota-Token', token);
+    if (accessToken) headers.set('X-Quota-Token', accessToken);
     return headers;
   }
 
@@ -192,6 +219,81 @@
       hideDisclaimer: source.hideDisclaimer === true,
       objective,
     };
+  }
+
+  function modeOf(snapshot) {
+    if (state.offline) return 'offline';
+    const values = [];
+    if (isRecord(snapshot)) {
+      values.push(snapshot.mode);
+      if (isRecord(snapshot.dataSource)) {
+        values.push(snapshot.dataSource.mode, snapshot.dataSource.kind, snapshot.dataSource.type, snapshot.dataSource.source, snapshot.dataSource.label);
+      } else {
+        values.push(snapshot.dataSource);
+      }
+      if (isRecord(snapshot.account) && isRecord(snapshot.account.plan)) values.push(snapshot.account.plan.source);
+    }
+    const joined = values
+      .filter((value) => typeof value === 'string')
+      .join(' ')
+      .toLowerCase();
+    if (/demo|演示|synthetic|合成/.test(joined)) return 'demo';
+    if (/live|实时|official|current-local-codex-account|account\/ratelimits\/read/.test(joined)) return 'live';
+    return 'unknown';
+  }
+
+  function modeCopy(mode) {
+    if (mode === 'live') {
+      return {
+        label: '实时账户数据',
+        detail: '账户窗口来自官方额度接口；会话数字仍是监控期间估算。',
+      };
+    }
+    if (mode === 'demo') {
+      return {
+        label: '演示数据，不是你的账户或任务',
+        detail: '合成会话和账户值仅用于预览；模型自动操作已禁用。',
+      };
+    }
+    if (mode === 'offline') {
+      return {
+        label: '服务已关闭 / 链接已过期',
+        detail: '请重新运行 Open-Monitor.command，或从新任务打开监控器。',
+      };
+    }
+    return {
+      label: '数据源未声明',
+      detail: '等待服务声明 live 或 demo；当前数字不应视为账户数据。',
+    };
+  }
+
+  function accountSummaryFrom(snapshot) {
+    const account = isRecord(snapshot) && isRecord(snapshot.account) ? snapshot.account : {};
+    const summary = isRecord(account.summary) ? account.summary : {};
+    const windows = Array.isArray(account.windows) ? account.windows.filter((entry) => isRecord(entry)) : [];
+    const fallback = windows[0] || {};
+    const choose = (key) => Object.prototype.hasOwnProperty.call(summary, key) ? summary[key] : fallback[key];
+    return {
+      usedPercent: choose('usedPercent'),
+      remainingPercent: choose('remainingPercent'),
+      windowLabel: choose('windowLabel') || choose('label'),
+      windowMinutes: choose('windowMinutes'),
+      resetsAt: choose('resetsAt'),
+      observedAt: choose('observedAt') || account.lastFetchedAt,
+    };
+  }
+
+  function freshness(value, stale = false) {
+    const date = parseDate(value);
+    if (stale) {
+      return { label: date ? `旧样本 · ${formatBeijingDateTime(date)}` : '旧样本 · 服务报告已过期', className: 'freshness-stale' };
+    }
+    if (!date) return { label: '样本时间待定', className: 'freshness-unknown' };
+    const age = Math.max(0, Date.now() - date.getTime());
+    if (age < 15_000) return { label: '刚刚采样', className: 'freshness-fresh' };
+    if (age < 120_000) return { label: `${Math.floor(age / 1000)} 秒前采样`, className: 'freshness-fresh' };
+    if (age < 3_600_000) return { label: `${Math.floor(age / 60_000)} 分钟前采样`, className: 'freshness-aging' };
+    return { label: `旧样本 · ${formatBeijingDateTime(date)}`, className: 'freshness-stale' };
   }
 
   function sessionsFrom(snapshot) {
@@ -265,6 +367,44 @@
     return `${active} 个活跃根会话正在采样`;
   }
 
+  function renderMode(snapshot) {
+    const mode = modeOf(snapshot);
+    state.mode = mode;
+    const copy = modeCopy(mode);
+    const account = isRecord(snapshot) && isRecord(snapshot.account) ? snapshot.account : {};
+    if (mode === 'live' && account.stale === true) {
+      copy.detail = '账户官方样本已过期；以下数字保留作参考，不代表实时额度。';
+    }
+    const banner = $('modeBanner');
+    if (banner) {
+      banner.classList.remove('mode-live', 'mode-demo', 'mode-offline', 'mode-unknown', 'is-stale');
+      banner.classList.add(`mode-${mode}`);
+      if (mode === 'live' && account.stale === true) banner.classList.add('is-stale');
+    }
+    const titles = {
+      live: '真实账户 · Codex 额度监控器',
+      demo: '演示数据 · Codex 额度监控器',
+      offline: '服务离线 · Codex 额度监控器',
+      unknown: '数据源未声明 · Codex 额度监控器',
+    };
+    document.title = titles[mode] || titles.unknown;
+    setText('modeBannerLabel', copy.label, '数据源未声明');
+    setText('modeBannerDetail', copy.detail, '等待服务声明 live 或 demo；请先确认数据来源。');
+    const watermark = $('demoWatermark');
+    if (watermark) {
+      watermark.hidden = mode !== 'demo';
+      watermark.setAttribute('aria-hidden', mode === 'demo' ? 'false' : 'true');
+    }
+    const allowModelOperations = mode === 'live' && !state.offline;
+    const objective = $('objectiveSelect');
+    const autoSwitch = $('autoSwitchCheckbox');
+    const restoreDefaults = $('restoreDefaultsBtn');
+    if (objective) objective.disabled = !allowModelOperations;
+    if (autoSwitch) autoSwitch.disabled = !allowModelOperations;
+    if (restoreDefaults) restoreDefaults.disabled = !allowModelOperations || state.restoreSaving;
+    setHidden('demoSettingsNote', mode !== 'demo');
+  }
+
   function renderConnection(snapshot) {
     const pill = $('connectionPill');
     const text = $('connectionText');
@@ -274,6 +414,9 @@
     if (state.fetching) {
       pill.classList.add('is-loading');
       text.textContent = '同步中';
+    } else if (state.offline) {
+      pill.classList.add('is-error');
+      text.textContent = '已离线';
     } else if (state.error) {
       pill.classList.add('is-error');
       text.textContent = '连接异常';
@@ -284,12 +427,17 @@
       pill.classList.add('is-loading');
       text.textContent = '等待连接';
     }
-    if (refresh) refresh.disabled = state.fetching;
+    if (refresh) {
+      refresh.disabled = state.fetching || state.offline;
+      refresh.hidden = state.offline;
+    }
     const settings = getSettings(snapshot);
     const updated = formatUpdated(state.lastUpdatedAt || (isRecord(snapshot) ? snapshot.now : null));
     const accountError = isRecord(snapshot) && isRecord(snapshot.account) ? snapshot.account.error : null;
-    const status = state.error ? '连接异常' : accountError ? '账户额度读取异常' : state.fetching ? '读取本地快照' : '已连接';
-    const statusText = `${status} · 本地每 ${settings.pollSeconds} 秒刷新 · ${updated}${settings.paused ? ' · 远程额度暂停' : ''}`;
+    const status = state.offline ? '服务已关闭或链接已过期' : state.error ? '连接异常' : accountError ? '账户额度读取异常' : state.fetching ? '读取本地快照' : '已连接';
+    const statusText = state.offline
+      ? `${status} · 请重新运行 Open-Monitor.command，或从新任务打开监控器`
+      : `${status} · 本地每 ${settings.pollSeconds} 秒刷新 · ${updated}${settings.paused ? ' · 远程额度暂停' : ''}`;
     setText('globalStatus', statusText, '等待连接');
     setText('compactStatusText', statusText, '等待连接');
   }
@@ -297,17 +445,26 @@
   function renderGlobalError(snapshot) {
     const element = $('globalError');
     const message = $('globalErrorText');
+    const retry = $('retryBtn');
     if (!element || !message) return;
+    if (state.offline) {
+      message.textContent = '服务已关闭或链接已过期。请重新运行 Open-Monitor.command，或从新任务打开“Codex 额度监控器”；不要反复刷新此旧链接。';
+      element.hidden = false;
+      if (retry) retry.hidden = true;
+      return;
+    }
     const account = isRecord(snapshot) && isRecord(snapshot.account) ? snapshot.account : null;
     const visibleError = state.error || (account && account.error ? safeError(account.error, '') : '');
     if (!visibleError) {
       element.hidden = true;
+      if (retry) retry.hidden = false;
       return;
     }
     message.textContent = state.error
       ? `无法读取最新本地快照：${safeError(state.error)}`
       : `账户额度暂不可用：${safeError(visibleError)}`;
     element.hidden = false;
+    if (retry) retry.hidden = false;
   }
 
   function renderOverview(snapshot) {
@@ -332,19 +489,42 @@
       setText('unknownSessionDetail', unknownCount === null ? '等待状态字段' : unknownCount > 0 ? '状态或会话信息缺失' : '状态均已识别', '等待状态字段');
     }
 
-    const attribution = isRecord(snapshot) && isRecord(snapshot.attribution) ? snapshot.attribution : {};
-    const estimated = finiteNumber(attribution.estimatedPercent);
-    setText('estimatedTotal', estimated === null ? '—' : formatPercent(estimated), '—');
-    setText('estimatedTotalDetail', estimated === null ? '等待归因样本' : safeText(attribution.windowLabel, '会话归因估算'), '等待归因样本');
+    const account = isRecord(snapshot) && isRecord(snapshot.account) ? snapshot.account : {};
+    const summary = accountSummaryFrom(snapshot);
+    const remaining = finiteNumber(summary.remainingPercent);
+    const used = finiteNumber(summary.usedPercent);
+    const mode = state.mode;
+    const suffix = mode === 'live' ? '（官方）' : mode === 'demo' ? '（演示）' : '（待确认）';
+    const sample = freshness(summary.observedAt, account.stale === true);
+    setText('accountRemainingLabel', `账户剩余${suffix}`, '账户剩余（待确认）');
+    setText('accountUsedLabel', `账户已用${suffix}`, '账户已用（待确认）');
+    setText('accountRemainingValue', remaining === null ? '—' : formatPercent(remaining), '—');
+    setText('accountUsedValue', used === null ? '—' : formatPercent(used), '—');
+    setText('accountRemainingDetail', remaining === null ? '等待官方额度窗口' : `${safeText(summary.windowLabel, '官方额度窗口')} · ${sample.label}`, '等待官方额度窗口');
+    setText('accountUsedDetail', used === null ? '等待官方额度窗口' : `直接来自额度接口 · ${sample.label}`, '直接来自额度接口');
+    setText('summaryUsedPercent', used === null ? '—' : formatPercent(used), '—');
+    setText('summaryRemainingPercent', remaining === null ? '—' : formatPercent(remaining), '—');
+    setText('summaryWindowLabel', safeText(summary.windowLabel, '—'), '—');
+    const sampleElement = $('accountFreshness');
+    if (sampleElement) {
+      sampleElement.textContent = sample.label;
+      sampleElement.classList.remove('freshness-fresh', 'freshness-aging', 'freshness-stale', 'freshness-unknown');
+      sampleElement.classList.add(sample.className);
+      sampleElement.title = summary.observedAt ? formatBeijingDateTime(summary.observedAt) : '样本时间待定';
+    }
 
-    const reset = isRecord(snapshot) && isRecord(snapshot.reset) ? snapshot.reset : {};
-    const resetSeconds = finiteNumber(reset.secondsUntil);
-    state.resetBaseSeconds = resetSeconds;
-    state.resetBaseAt = resetSeconds === null ? null : Date.now();
-    state.resetScheduledAt = reset.scheduledAt;
-    state.exhaustionAt = reset.exhaustionAt;
-    setText('nextResetValue', resetSeconds === null ? '—' : formatShortDuration(resetSeconds), '—');
-    setText('nextResetDetail', resetSeconds === null ? '等待官方倒计时' : formatDate(reset.scheduledAt, '官方时间待定'), '等待官方倒计时');
+    const plan = isRecord(account.plan) ? account.plan : {};
+    const planType = safeText(plan.type, '读取中');
+    const normalizedPlan = planType.toLowerCase() === 'pro' ? 'Pro' : planType;
+    const planPrefix = mode === 'live' ? '官方' : mode === 'demo' ? '演示' : '待确认';
+    setText('planBadge', `${planPrefix} ${normalizedPlan}`, `${planPrefix} 读取中`);
+    const planSource = safeText(plan.source, 'account/rateLimits/read');
+    const planDetail = safeText(plan.detail, '额度接口未提供套餐说明。');
+    setText('planDetail', `来源：${planSource} · ${planDetail}`, '来源：等待 account/rateLimits/read');
+    const multiplier = finiteNumber(plan.multiplier);
+    setText('planMultiplierNote', multiplier === null
+      ? '接口未区分 5x/20x；不用于计算官方百分比或重置，也不自动假设 Plus。'
+      : `接口报告倍率 ${multiplier.toFixed(3)}x；官方百分比和重置仍直接取额度接口。`, '接口未提供倍率信息。');
   }
 
   function renderSessionList(snapshot) {
@@ -408,7 +588,7 @@
       ];
       const credits = finiteNumber(session.estimatedCredits);
       if (credits !== null) statParts.push(`估算 credits ${formatCredits(credits)}`);
-      statLine.textContent = statParts.join(' · ');
+      statLine.textContent = `监控期间估算 · ${statParts.join(' · ')}`;
       row.append(statLine);
 
       const notes = document.createElement('div');
@@ -463,10 +643,11 @@
     const error = account.error ? safeError(account.error) : '';
     const errorElement = $('accountError');
     if (errorElement) {
-      errorElement.textContent = error;
-      errorElement.hidden = !error;
+      const staleText = account.stale === true ? '账户官方样本已过期；以下窗口值仅作参考。' : '';
+      errorElement.textContent = error || staleText;
+      errorElement.hidden = !(error || staleText);
+      errorElement.classList.toggle('inline-warning', !error && Boolean(staleText));
     }
-    setText('accountFetchedAt', formatUpdated(account.lastFetchedAt), '等待读取');
     if (!windows) {
       container.append(textElement('div', 'empty-state', '等待账户窗口数据 · 未虚构余量'));
       return;
@@ -636,7 +817,7 @@
     const restore = $('restoreDefaultsBtn');
     if (objective && document.activeElement !== objective) objective.value = settings.objective;
     if (autoSwitch && document.activeElement !== autoSwitch) autoSwitch.checked = settings.autoSwitch;
-    if (restore) restore.disabled = state.restoreSaving;
+    if (restore) restore.disabled = state.restoreSaving || state.mode !== 'live' || state.offline;
   }
 
   function renderCost(snapshot) {
@@ -658,10 +839,31 @@
 
   function renderReset(snapshot) {
     const reset = isRecord(snapshot) && isRecord(snapshot.reset) ? snapshot.reset : {};
-    const resetSeconds = finiteNumber(reset.secondsUntil);
-    setText('officialResetCountdown', resetSeconds === null ? '等待数据' : formatShortDuration(resetSeconds), '等待数据');
-    setText('officialResetAt', formatDate(reset.scheduledAt, '官方时间待定'), '官方时间待定');
-    const exhaustionDate = parseDate(reset.exhaustionAt);
+    const stale = reset.stale === true;
+    const resetSeconds = stale ? null : finiteNumber(reset.secondsUntil);
+    state.resetBaseSeconds = resetSeconds;
+    state.resetBaseAt = resetSeconds === null ? null : Date.now();
+    state.resetScheduledAt = reset.scheduledAt;
+    const officialStat = $('officialResetStat');
+    if (officialStat) officialStat.classList.toggle('reset-stat-stale', stale);
+    const resetLabel = state.mode === 'demo'
+      ? '此额度窗口的重置（演示）'
+      : stale
+        ? '此额度窗口的官方重置（样本已过期）'
+        : '此额度窗口的官方重置';
+    setText('officialResetLabel', resetLabel, '此额度窗口的官方重置');
+    setText('exhaustionLabel', state.mode === 'demo' ? '本机速率耗尽估计（演示）' : '本机速率耗尽估计', '本机速率耗尽估计');
+    setText('officialResetCountdown', stale ? '官方数据暂不可用' : resetSeconds === null ? '等待数据' : formatShortDuration(resetSeconds), '等待数据');
+    const resetSource = safeText(reset.source, 'account/rateLimits/read');
+    const resetTimezone = safeText(reset.timezone, 'Asia/Shanghai');
+    const timezoneSuffix = resetTimezone === 'Asia/Shanghai' ? '' : ` · 时区 ${resetTimezone}`;
+    const resetTime = reset.scheduledAt
+      ? formatBeijingDateTime(reset.scheduledAt)
+      : stale && reset.lastKnownScheduledAt
+        ? `上次已知 ${formatBeijingDateTime(reset.lastKnownScheduledAt)}`
+        : '官方时间待定';
+    setText('officialResetAt', `${resetTime} · ${resetSource}${timezoneSuffix}${stale ? ' · 样本已过期' : ''}`, '官方时间待定');
+    const exhaustionDate = stale ? null : parseDate(reset.exhaustionAt);
     state.exhaustionAt = reset.exhaustionAt;
     setText('exhaustionEstimate', exhaustionDate ? formatShortDuration((exhaustionDate.getTime() - Date.now()) / 1000, '已到期') : '等待速率样本', '等待速率样本');
     setText('exhaustionAt', exhaustionDate ? formatDate(exhaustionDate) : '当前速率尚无可用估计', '当前速率尚无可用估计');
@@ -695,6 +897,14 @@
     });
   }
 
+  function renderOfflineState() {
+    document.body.classList.toggle('is-offline', state.offline);
+    setHidden('offlinePanel', !state.offline);
+    setHidden('hero', state.offline);
+    setHidden('dashboardGrid', state.offline);
+    setHidden('footer', state.offline);
+  }
+
   function renderSettings(snapshot) {
     const settings = getSettings(snapshot);
     const poll = $('pollSecondsInput');
@@ -712,7 +922,6 @@
     if (state.resetBaseSeconds !== null && state.resetBaseAt !== null) {
       const elapsed = (Date.now() - state.resetBaseAt) / 1000;
       const remaining = state.resetBaseSeconds - elapsed;
-      setText('nextResetValue', formatShortDuration(remaining), '—');
       setText('officialResetCountdown', formatShortDuration(remaining), '等待数据');
     }
     const exhaustion = parseDate(state.exhaustionAt);
@@ -730,6 +939,8 @@
 
   function render(snapshot) {
     const safeSnapshot = isRecord(snapshot) ? snapshot : {};
+    renderMode(snapshot);
+    renderOfflineState();
     renderConnection(snapshot);
     renderGlobalError(safeSnapshot);
     renderOverview(safeSnapshot);
@@ -766,6 +977,10 @@
 
   function schedulePoll() {
     if (state.pollTimer) window.clearTimeout(state.pollTimer);
+    if (state.offline) {
+      state.pollTimer = null;
+      return;
+    }
     const settings = getSettings(state.snapshot || {});
     state.pollTimer = window.setTimeout(() => {
       state.pollTimer = null;
@@ -782,6 +997,7 @@
         method: 'GET',
         headers: requestHeaders(),
         cache: 'no-store',
+        signal: AbortSignal.timeout(8000),
         credentials: 'same-origin',
       });
       if (!response.ok) throw new Error(await responseError(response));
@@ -789,9 +1005,12 @@
       if (!isRecord(payload)) throw new Error('快照格式无效');
       state.snapshot = payload;
       state.error = null;
+      state.offline = false;
       state.lastUpdatedAt = Date.now();
     } catch (error) {
       state.error = safeError(error, '读取快照失败');
+      state.snapshot = null;
+      state.offline = true;
     } finally {
       state.fetching = false;
       render(state.snapshot || {});
@@ -860,7 +1079,7 @@
   }
 
   async function restoreDefaults() {
-    if (state.restoreSaving) return;
+    if (state.restoreSaving || state.mode !== 'live' || state.offline) return;
     state.restoreSaving = true;
     const button = $('restoreDefaultsBtn');
     const status = $('restoreDefaultsStatus');
@@ -917,6 +1136,12 @@
   }
 
   function bindControls() {
+    document.querySelectorAll('a[href="#main"], a[href="#settings"]').forEach(link => {
+      link.addEventListener('click', event => {
+        event.preventDefault();
+        document.getElementById(link.getAttribute('href').slice(1))?.scrollIntoView({behavior:'smooth', block:'start'});
+      });
+    });
     const refresh = $('refreshBtn');
     const retry = $('retryBtn');
     if (refresh) refresh.addEventListener('click', () => fetchSnapshot());

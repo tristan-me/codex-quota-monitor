@@ -21,6 +21,25 @@ export const defaultDataDir = () =>
   process.env.CODEX_QUOTA_MONITOR_DATA_DIR ||
   join(homedir(), ".local", "share", "codex-quota-monitor-v2");
 
+export async function readEndpoint(dataDir, mode) {
+  try {
+    const saved = JSON.parse(
+      await readFile(join(dataDir, "endpoint.json"), "utf8"),
+    );
+    if (
+      saved.mode !== mode ||
+      !Number.isInteger(saved.port) ||
+      saved.port < 1 ||
+      saved.port > 65535 ||
+      !/^[a-f0-9]{64}$/.test(saved.token)
+    )
+      return null;
+    return saved;
+  } catch {
+    return null;
+  }
+}
+
 export function authorized(req, token, port) {
   if (![`127.0.0.1:${port}`, `localhost:${port}`].includes(req.headers.host))
     return false;
@@ -172,12 +191,17 @@ async function closeCollector(collector) {
 }
 
 export async function startService({
-  dataDir = defaultDataDir(),
+  dataDir,
   demo = false,
   collector,
-  listenPort = 0,
+  listenPort,
   listenHost = "127.0.0.1",
 } = {}) {
+  // Demo credentials, state and endpoint are always isolated from real data.
+  dataDir = demo
+    ? join(dataDir || defaultDataDir(), "demo")
+    : dataDir || defaultDataDir();
+  const mode = demo ? "demo" : "live";
   await mkdir(dataDir, { recursive: true, mode: 0o700 });
   const lockPath = join(dataDir, "service.lock");
   const runtimePath = join(dataDir, "runtime.json");
@@ -211,7 +235,9 @@ export async function startService({
     // Complete the synchronous local scan before advertising a ready service.
     // The collector's remote quota request remains background work by design.
     await serviceCollector.init();
-    const token = randomBytes(32).toString("hex");
+    const endpoint = await readEndpoint(dataDir, mode);
+    const token = endpoint?.token || randomBytes(32).toString("hex");
+    const preferredPort = listenPort ?? endpoint?.port ?? 0;
     let port;
     server = createServer(async (req, res) => {
       const security = {
@@ -237,13 +263,23 @@ export async function startService({
                 "Open the monitor using its local launcher to authenticate.",
             });
           if (req.method === "GET" && url.pathname === "/api/snapshot")
-            return json(200, serviceCollector.snapshot());
+            return json(200, {
+              ...serviceCollector.snapshot(),
+              mode,
+              dataSchema: 2,
+            });
           if (req.method === "GET" && url.pathname === "/api/health")
             return json(200, {
               app: "codex-quota-monitor",
               version: "0.2.0",
+              mode,
+              dataSchema: 2,
               ready: true,
               pid: process.pid,
+            });
+          if (demo && req.method === "POST")
+            return json(403, {
+              error: "演示模式不能修改真实设置；请通过正式启动器打开你的账户。",
             });
           if (
             req.method === "POST" &&
@@ -273,6 +309,7 @@ export async function startService({
           return json(403, { error: "Local GET only" });
         const file = {
           "/": "index.html",
+          "/demo/": "index.html",
           "/app.js": "app.js",
           "/style.css": "style.css",
         }[url.pathname];
@@ -297,13 +334,26 @@ export async function startService({
     server.headersTimeout = 10000;
     await new Promise((resolve, reject) => {
       server.once("error", reject);
-      server.listen(listenPort, listenHost, resolve);
+      server.listen(preferredPort, listenHost, resolve);
     });
     const address = server.address();
     port = address && typeof address === "object" ? address.port : null;
     if (!Number.isInteger(port) || port < 1 || port > 65535)
       throw new Error("Monitor listener did not report a valid port");
-    runtime = { pid: process.pid, port, token, version: "0.2.0", dataDir };
+    runtime = {
+      pid: process.pid,
+      port,
+      token,
+      version: "0.2.0",
+      dataSchema: 2,
+      mode,
+      dataDir,
+    };
+    await writeFile(
+      join(dataDir, "endpoint.json"),
+      JSON.stringify({ port, token, mode }) + "\n",
+      { mode: 0o600 },
+    );
     await writeRuntime(runtimePath, runtime);
 
     const close = async () => {
@@ -336,7 +386,9 @@ export async function startService({
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   const service = await startService({ demo: process.argv.includes("--demo") });
-  console.error(`Codex quota monitor ready on loopback port ${service.port}`);
+  console.error(
+    `${process.argv.includes("--demo") ? "DEMO — SYNTHETIC DATA" : "LIVE ACCOUNT"}: Codex quota monitor ready on loopback port ${service.port}`,
+  );
   let stopping = false;
   const stop = async () => {
     if (stopping) return;

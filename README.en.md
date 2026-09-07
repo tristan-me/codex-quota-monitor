@@ -8,6 +8,7 @@ Codex Quota Monitor is a local v0.2.0 beta plugin for observing Codex account wi
 
 - Reads local SQLite metadata in read-only mode to discover sessions through both the new paginated path and the legacy path. It does not write to the Codex database.
 - Refreshes the local cache every 5 seconds by default and polls account quota every 30 seconds by default. Both intervals are configurable in the panel.
+- Shows official account remaining/used percentages and reset time without requiring a manually selected plan multiplier. When the service only returns Pro, the monitor does not guess 5x versus 20x.
 - Tracks samples after monitoring starts and displays consumption, observed speed, reset countdowns, and a linear exhaustion estimate based on the observed trend.
 - Probes `threadUsage` availability. This release allocates account-window changes by local token deltas; credit-based calibration remains future work. The tested account returns `threadUsage=null`.
 - Shows this notice every time the panel opens, with a “Do not remind me again” checkbox and a confirmation control:
@@ -77,3 +78,5 @@ node --experimental-sqlite --test tests/*.test.mjs
 The monitor does not read authentication files. The legacy adapter reads a bounded JSONL tail and extracts only lifecycle and token metadata; it does not retain or upload conversation text. Titles can originate from the first prompt line and remain private local data.
 
 Stop the background service with `node plugins/codex-quota-monitor/scripts/stop.mjs`. Turning off automation stops future changes; the restore button restores the original defaults only if no external edit conflicts.
+
+Live and demo state, credentials, and endpoints are isolated. Demo pages are explicitly marked as synthetic. Offline pages withdraw live values and explain how to reopen the launcher. Clean restarts reuse the saved loopback endpoint; an occupied port is reported without terminating another application.

@@ -30,6 +30,15 @@
         </div>
       </header>
 
+      <div id="modeBanner" class="mode-banner mode-unknown" role="status" aria-live="polite">
+        <span class="mode-banner-mark" aria-hidden="true"></span>
+        <span class="mode-banner-copy">
+          <strong id="modeBannerLabel">数据源未声明</strong>
+          <span id="modeBannerDetail">等待服务声明 live 或 demo；请先确认数据来源。</span>
+        </span>
+      </div>
+      <div id="demoWatermark" class="demo-watermark" hidden aria-hidden="true">演示数据<br><span>不是你的账户或任务</span></div>
+
       <div id="globalError" class="notice notice-error" role="alert" hidden>
         <span class="notice-icon" aria-hidden="true">!</span>
         <span id="globalErrorText">暂时无法读取快照。</span>
@@ -46,20 +55,30 @@
           <span id="compactStatusText">正在读取本地快照…</span>
         </div>
 
-        <section class="hero full-dashboard" aria-labelledby="overview-title">
+        <section id="hero" class="hero full-dashboard data-card" aria-labelledby="overview-title">
           <div class="hero-copy">
             <p class="section-kicker">额度观察 · 本地估算</p>
             <h1 id="overview-title">看见每个会话的消耗节奏</h1>
             <p class="hero-description">
-              仪表板只读取本地插件 API 的快照，按会话样本估算消耗和速率。运行中的任务会继续由 Codex 自己管理。
+              先看账户官方窗口，再看监控期间的会话估算。运行中的任务会继续由 Codex 自己管理。
             </p>
             <p class="hero-note">
               <span class="note-mark" aria-hidden="true">i</span>
               每会话百分比和速度是透明标注的估算值；三位小数是显示精度，不代表官方精确拆账。账户归因可能按本机 token 占比假设分摊，可能混入其他设备消耗。
             </p>
           </div>
-          <div class="hero-metrics" aria-label="概览指标">
+          <div class="hero-metrics" aria-label="账户官方指标与会话状态">
             <article class="metric-card metric-card-accent">
+              <span id="accountRemainingLabel" class="metric-label">账户剩余（官方）</span>
+              <strong id="accountRemainingValue" class="metric-value">—</strong>
+              <span id="accountRemainingDetail" class="metric-detail">等待账户窗口</span>
+            </article>
+            <article class="metric-card">
+              <span id="accountUsedLabel" class="metric-label">账户已用（官方）</span>
+              <strong id="accountUsedValue" class="metric-value">—</strong>
+              <span id="accountUsedDetail" class="metric-detail">直接来自官方额度窗口</span>
+            </article>
+            <article class="metric-card">
               <span class="metric-label">活跃根会话</span>
               <strong id="activeSessionCount" class="metric-value">—</strong>
               <span id="activeSessionDetail" class="metric-detail">等待会话数据</span>
@@ -69,28 +88,28 @@
               <strong id="unknownSessionCount" class="metric-value">—</strong>
               <span id="unknownSessionDetail" class="metric-detail">等待快照</span>
             </article>
-            <article class="metric-card">
-              <span class="metric-label">已消耗估算</span>
-              <strong id="estimatedTotal" class="metric-value">—</strong>
-              <span id="estimatedTotalDetail" class="metric-detail">等待归因样本</span>
-            </article>
-            <article class="metric-card">
-              <span class="metric-label">下次重置</span>
-              <strong id="nextResetValue" class="metric-value">—</strong>
-              <span id="nextResetDetail" class="metric-detail">等待官方倒计时</span>
-            </article>
           </div>
         </section>
 
-        <div class="dashboard-grid full-dashboard">
+        <div id="offlinePanel" class="offline-panel full-dashboard" role="alert" hidden>
+          <div class="offline-icon" aria-hidden="true">!</div>
+          <div>
+            <p class="section-kicker">OFFLINE</p>
+            <h2>服务已关闭或链接已过期</h2>
+            <p>此页面已清除上次快照，不会继续显示可能过时的会话或账户数字。请重新运行 <code>Open-Monitor.command</code>，或从新任务打开“Codex 额度监控器”。</p>
+          </div>
+        </div>
+
+        <div id="dashboardGrid" class="dashboard-grid full-dashboard data-card">
           <section class="panel sessions-panel panel-wide" aria-labelledby="sessions-title">
             <div class="panel-header">
               <div>
                 <p class="section-kicker">LIVE SESSIONS</p>
-                <h2 id="sessions-title">会话消耗</h2>
+                <h2 id="sessions-title">会话消耗（监控期间估算）</h2>
               </div>
               <span id="sessionRefreshHint" class="panel-header-meta">每 5 秒更新</span>
             </div>
+            <p class="panel-note">会话百分比和速率仅代表监控期间的透明估算，不与账户官方剩余百分比直接相减。</p>
             <div id="sessionSummary" class="summary-strip" aria-live="polite">
               <span class="summary-dot" aria-hidden="true"></span>
               <span id="sessionSummaryText">正在等待会话快照</span>
@@ -104,22 +123,35 @@
                 <p class="section-kicker">ACCOUNT WINDOWS</p>
                 <h2 id="account-title">账户窗口</h2>
               </div>
-              <span id="accountFetchedAt" class="panel-header-meta">等待读取</span>
+              <span id="accountFreshness" class="panel-header-meta freshness-unknown">样本时间待定</span>
             </div>
             <div id="accountError" class="inline-error" role="alert" hidden></div>
+            <div class="account-plan-card">
+              <div class="account-plan-heading">
+                <span class="section-kicker">PLAN</span>
+                <strong id="planBadge">读取中</strong>
+              </div>
+              <p id="planDetail" class="muted-copy">来源：等待 account/rateLimits/read</p>
+              <p id="planMultiplierNote" class="small-note">接口未区分 5x/20x；不用于计算官方百分比或重置，也不自动假设 Plus。</p>
+            </div>
+            <div class="account-official-summary">
+              <div><span>官方已用</span><strong id="summaryUsedPercent">—</strong></div>
+              <div><span>官方剩余</span><strong id="summaryRemainingPercent">—</strong></div>
+              <div><span>窗口</span><strong id="summaryWindowLabel">—</strong></div>
+            </div>
             <div id="accountWindows" class="quota-window-list"></div>
           </section>
 
           <section class="panel attribution-panel" aria-labelledby="attribution-title">
             <div class="panel-header">
               <div>
-                <p class="section-kicker">ATTRIBUTION</p>
-                <h2 id="attribution-title">额度归因</h2>
+                <p class="section-kicker">MONITORING ESTIMATE</p>
+                <h2 id="attribution-title">监控期间归因（估算）</h2>
               </div>
               <span id="attributionSince" class="panel-header-meta">等待样本</span>
             </div>
             <div class="attribution-total">
-              <span>已归因比例</span>
+              <span>监控期间已归因比例</span>
               <strong id="attributionTotal">—</strong>
             </div>
             <div class="attribution-bars" aria-label="额度归因明细">
@@ -180,6 +212,7 @@
                 <span>允许自动为新任务设置默认模型（影响后续默认值）</span>
               </label>
               <p class="small-note">开启后只影响后续默认值；正在运行的任务不会被切换。</p>
+              <p id="demoSettingsNote" class="small-note demo-settings-note" hidden>演示模式已禁用模型自动操作；演示任务和账户数字不是你的真实数据。</p>
               <p class="small-note">关闭自动切换仅停止后续改动，不自动撤回最后一次默认值。恢复操作会核对当前设置；如果你已另行修改 model，后端会拒绝覆盖。</p>
               <div class="restore-controls">
                 <button id="restoreDefaultsBtn" class="button button-quiet" type="button">恢复接管前的默认模型</button>
@@ -198,13 +231,13 @@
               <span class="radar-pulse" aria-label="仅供参考" title="仅供参考"><span aria-hidden="true"></span>估算</span>
             </div>
             <div class="reset-grid">
-              <div class="reset-stat">
-                <span>官方倒计时</span>
+              <div id="officialResetStat" class="reset-stat">
+                <span id="officialResetLabel">此额度窗口的官方重置</span>
                 <strong id="officialResetCountdown">等待数据</strong>
                 <small id="officialResetAt">—</small>
               </div>
-              <div class="reset-stat">
-                <span>当前速率耗尽估计</span>
+              <div class="reset-stat reset-stat-estimate">
+                <span id="exhaustionLabel">本机速率耗尽估计</span>
                 <strong id="exhaustionEstimate">等待速率样本</strong>
                 <small id="exhaustionAt">—</small>
               </div>
@@ -218,6 +251,7 @@
               <a href="https://codex-reset.com/zh/" target="_blank" rel="noopener noreferrer">Codex Reset ↗</a>
               <a href="https://codexradar.com/#model-ratings" target="_blank" rel="noopener noreferrer">Codex Radar ↗</a>
             </div>
+            <p class="reset-note">官方重置来自额度接口；本机耗尽估计只反映当前监控样本，不能推断官方重置时间。</p>
           </section>
 
           <section id="settings" class="panel settings-panel panel-wide" aria-labelledby="settings-title">
@@ -278,7 +312,7 @@
         </div>
       </main>
 
-      <footer class="footer full-dashboard">
+      <footer id="footer" class="footer full-dashboard data-card">
         <span>本地插件 UI · 估算透明标注</span>
         <span id="footerUpdatedAt">尚未同步</span>
       </footer>

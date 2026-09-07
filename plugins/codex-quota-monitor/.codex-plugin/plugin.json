@@ -1,6 +1,6 @@
 {
   "name": "codex-quota-monitor",
-  "version": "0.2.0",
+  "version": "0.2.0+codex.20260907131737",
   "description": "Local Codex quota windows, transparent session estimates, and cost-aware model defaults.",
   "author": {
     "name": "Quanli Li",
@@ -9,7 +9,7 @@
   "skills": "./skills/",
   "interface": {
     "displayName": "Codex Quota Monitor",
-    "shortDescription": "本地会话额度估算与实时速率",
+    "shortDescription": "\u672c\u5730\u4f1a\u8bdd\u989d\u5ea6\u4f30\u7b97\u4e0e\u5b9e\u65f6\u901f\u7387",
     "longDescription": "Track official account quota windows and explicitly estimated session consumption with local refreshes, reset countdowns, and opt-in future model defaults.",
     "developerName": "Quanli Li",
     "category": "Productivity",
@@ -19,8 +19,8 @@
       "Write"
     ],
     "defaultPrompt": [
-      "打开 Codex 额度监控器。",
-      "查询会话额度消耗。"
+      "\u6253\u5f00 Codex \u989d\u5ea6\u76d1\u63a7\u5668\u3002",
+      "\u67e5\u8be2\u4f1a\u8bdd\u989d\u5ea6\u6d88\u8017\u3002"
     ],
     "brandColor": "#79E4BE",
     "websiteURL": "https://github.com/tristan-me/codex-quota-monitor"

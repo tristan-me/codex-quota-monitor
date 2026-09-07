@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 import { LocalReader } from "./local-reader.mjs";
 import { CodexAppServerClient } from "./app-server-client.mjs";
-import { Estimator, normalizeWindows, mainWindow } from "./metrics.mjs";
+import { Estimator, accountDisplay, mainWindow } from "./metrics.mjs";
 import { recommend } from "./recommend.mjs";
 
 export const DEFAULT_SETTINGS = {
@@ -61,7 +61,13 @@ export class Collector {
     this.threads = [];
     this.diagnostics = [];
     this.messages = [];
-    this.account = { windows: [], error: null, lastFetchedAt: null };
+    this.account = {
+      windows: [],
+      summary: null,
+      plan: { type: null, multiplier: null },
+      error: null,
+      lastFetchedAt: null,
+    };
     this.models = [];
     this.estimator = new Estimator();
     this.cost = {
@@ -86,6 +92,14 @@ export class Collector {
     const file = join(this.dataDir, "state.json");
     try {
       const saved = JSON.parse(await readFile(file, "utf8"));
+      if (
+        !this.demo &&
+        (saved.mode === "demo" ||
+          Object.keys(saved.estimator?.lastTokens || {}).some((id) =>
+            id.startsWith("demo-"),
+          ))
+      )
+        throw new Error("Synthetic state cannot be used in live mode");
       this.settings = {
         ...DEFAULT_SETTINGS,
         ...validateSettings(saved.settings || {}),
@@ -117,6 +131,7 @@ export class Collector {
   save() {
     const path = join(this.dataDir, "state.json");
     const value = JSON.stringify({
+      mode: this.demo ? "demo" : "live",
       settings: this.settings,
       estimator: this.estimator.state,
       originalDefaults: this.originalDefaults,
@@ -239,18 +254,20 @@ export class Collector {
         result = await this.client.request("account/rateLimits/read", {});
       }
       if (this.closed) return;
-      const windows = normalizeWindows(result, now);
-      if (!windows.length)
+      const sampledAt = Date.now();
+      const account = accountDisplay(result, sampledAt);
+      if (!account.windows.length)
         throw new Error("Quota response contained no valid windows");
-      this.account = { windows, error: null, lastFetchedAt: now };
+      this.account = account;
       const accountKey = createHash("sha256")
         .update(result.accountId || "identity-unavailable")
         .digest("hex");
-      this.estimator.quota(mainWindow(windows), now, accountKey);
+      this.estimator.quota(mainWindow(account.windows), sampledAt, accountKey);
       this.failures = 0;
     } catch (error) {
       if (this.closed) return;
       this.account.error = errorText(error);
+      this.estimator.state.gap = true;
       this.failures = (this.failures || 0) + 1;
       this.nextQuota =
         now +
@@ -450,7 +467,18 @@ export class Collector {
     const now = Date.now();
     const state = this.estimator.state;
     const window = mainWindow(this.account.windows);
-    const sessions = this.estimator.sessions(this.threads, now);
+    const stale =
+      this.account.error !== null ||
+      !this.account.lastFetchedAt ||
+      now - this.account.lastFetchedAt >
+        Math.max(120000, this.settings.quotaPollSeconds * 3000);
+    const sessions = this.estimator
+      .sessions(this.threads, now)
+      .map((session) => ({
+        ...session,
+        observationSince: state.since,
+        ...(this.settings.paused || stale ? { secondsPerPercent: null } : {}),
+      }));
     const rate = sessions.reduce(
       (sum, task) =>
         sum + (task.secondsPerPercent ? 1 / task.secondsPerPercent : 0),
@@ -458,16 +486,20 @@ export class Collector {
     );
     return {
       version: "0.2.0",
+      dataSchema: 2,
+      mode: this.demo ? "demo" : "live",
+      dataSource: this.demo ? "synthetic-demo" : "current-local-codex-account",
       now,
       settings: this.settings,
-      account: this.account,
+      account: { ...this.account, stale },
       sessions,
       attribution: {
         observedPercent: state.observedPercent,
-        estimatedPercent: Object.values(state.totals).reduce(
-          (a, b) => a + b,
-          0,
-        ),
+        estimatedPercent:
+          state.calibratedTokens > 0
+            ? Object.values(state.totals).reduce((a, b) => a + b, 0)
+            : null,
+        calibrated: state.calibratedTokens > 0,
         unattributedPercent: state.unattributedPercent,
         windowLabel: window?.label || "等待账户窗口",
         since: state.since,
@@ -506,12 +538,18 @@ export class Collector {
       ],
       history: state.history,
       reset: {
-        scheduledAt: window?.resetsAt,
-        secondsUntil: window?.resetsAt
-          ? Math.max(0, (window.resetsAt - now) / 1000)
-          : null,
+        source: "account/rateLimits/read",
+        timezone: "Asia/Shanghai",
+        windowLabel: window?.label || null,
+        stale,
+        scheduledAt: !stale ? window?.resetsAt : null,
+        lastKnownScheduledAt: window?.resetsAt,
+        secondsUntil:
+          !stale && window?.resetsAt
+            ? Math.max(0, (window.resetsAt - now) / 1000)
+            : null,
         exhaustionAt:
-          window && rate > 0
+          !stale && window && rate > 0
             ? now + (window.remainingPercent / rate) * 1000
             : null,
         unexpected: "unknown",

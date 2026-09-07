@@ -53,3 +53,9 @@
 - [Codex App Server](https://developers.openai.com/codex/app-server)
 - [Codex Radar（参考入口）](https://codexradar.com/#model-ratings)
 - [Codex Reset（参考入口）](https://codex-reset.com/zh/)
+
+## 演示页面不是当前账户
+
+若任务名称属于演示示例、数据源显示 demo，或者旧页面出现 Failed to fetch，请重新运行正式 `Open-Monitor.command`，使用返回的真实账户地址。不要把演示数据与订阅余额比较。新版本会在演示页面显著标注，并在离线时隐藏实时指标。
+
+账户 `usedPercent`、`resetsAt` 已由服务端针对当前订阅计算。套餐的 5x/20x 标签不是计算这些数值所需的输入。每会话估算只覆盖监控期间，不能与账户整个周窗口的已用值直接等同。
