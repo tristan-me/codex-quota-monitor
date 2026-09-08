@@ -22,6 +22,3 @@ tmp/
 .codex/
 .idea/
 .vscode/
-
-# macOS AVFoundation temporary files while producing tutorial videos
-docs/media/*.mp4.sb-*

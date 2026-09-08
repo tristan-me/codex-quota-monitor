@@ -24,16 +24,6 @@ Here is the complete Markdown mention text to send:
 
 In the actual composer, type `@` and select the plugin. Pasting the Markdown alone is not guaranteed to create a valid mention.
 
-This guide contains command replays and text instructions for the desktop steps. It does not include this plugin's native settings screenshot or a desktop screen recording. Dashboard screenshots use synthetic/public-reference data.
-
-## Installation walkthrough
-
-[![Installation and opening walkthrough](docs/media/codex-quota-monitor-cli-tutorial.gif)](docs/media/codex-quota-monitor-cli-tutorial.mp4)
-
-[View/download the 50-second MP4](docs/media/codex-quota-monitor-cli-tutorial.mp4) · [Copyable commands](#install-and-run-locally) · [Replay notes and execution evidence](docs/tutorials/README.md)
-
-The video uses Chinese captions and covers local marketplace registration, installation, checking the enabled plugin, opening it in a new chat, and bookmarking the dashboard. Local registration and installation were verified in an isolated configuration; native desktop actions are text instructions. This is a command replay, not a recording of the ChatGPT desktop UI. The optional remote Git route was not completed on this machine's network.
-
 ## Screenshots
 
 Account, session, and consumption values in these screenshots are synthetic examples. Reset announcements and third-party probabilities are public reference data captured at screenshot time, not current forecasts.
@@ -60,6 +50,8 @@ Account, session, and consumption values in these screenshots are synthetic exam
 Three decimal places are a display format only. They do not imply that the underlying data or an official account breakdown has three-decimal accuracy. Insufficient samples remain marked as warming up instead of being shown as a fabricated zero rate.
 
 ## Sessions and model overview
+
+Root sessions and child sessions keep their first-observed order. New entries append at the end; status, usage, and update-time changes do not reorder them. The order is saved with the local monitoring state and survives service restarts.
 
 The right-edge table of contents expands on hover or keyboard focus. Search sessions by title keywords or exact IDs. The list starts with five root sessions per page, supports expanding five more at a time, and keeps child sessions collapsible. Search and expansion survive refreshes. Session totals preserve observed allocations across quota resets; unobserved history cannot be recovered. Completed tasks use measured average rates when timing evidence exists.
 

@@ -148,3 +148,36 @@ test("temporarily missing plan metadata does not erase the same account history"
     0.5,
   );
 });
+
+test("session order stays stable through input shuffles, status changes, gaps, new roots, and children", () => {
+  const e = new Estimator();
+  const rootA = row("root-a", 0, "active");
+  const childA1 = row("child-a1", 0, "active", { parentThreadId: "root-a" });
+  const rootB = row("root-b", 0, "active");
+  const first = e.sessions([rootA, childA1, rootB], now);
+  assert.deepEqual(first.map((session) => session.id), ["root-a", "root-b"]);
+  assert.deepEqual(first[0].children.map((child) => child.id), ["child-a1"]);
+
+  const childA2 = row("child-a2", 0, "idle", { parentThreadId: "root-a" });
+  const rootAIdle = row("root-a", 0, "idle");
+  const rootBIdle = row("root-b", 0, "idle");
+  const rootC = row("root-c", 0, "active");
+  const shuffled = e.sessions([rootC, rootBIdle, childA2, rootAIdle, childA1], now + 1000);
+  assert.deepEqual(shuffled.map((session) => session.id), ["root-a", "root-b", "root-c"]);
+  assert.deepEqual(shuffled[0].children.map((child) => child.id), ["child-a1", "child-a2"]);
+
+  const missing = e.sessions([rootC, rootAIdle, childA2, childA1], now + 2000);
+  assert.deepEqual(missing.map((session) => session.id), ["root-a", "root-c"]);
+  const restored = e.sessions([rootC, rootBIdle, rootAIdle, childA2, childA1], now + 3000);
+  assert.deepEqual(restored.map((session) => session.id), ["root-a", "root-b", "root-c"]);
+  assert.deepEqual(restored[0].children.map((child) => child.id), ["child-a1", "child-a2"]);
+  assert.deepEqual(e.state.sessionOrder, ["root-a", "child-a1", "root-b", "root-c", "child-a2"]);
+
+  const restarted = new Estimator(JSON.parse(JSON.stringify(e.state)));
+  const afterRestart = restarted.sessions(
+    [rootC, childA2, rootB, childA1, rootA],
+    now + 4000,
+  );
+  assert.deepEqual(afterRestart.map((session) => session.id), ["root-a", "root-b", "root-c"]);
+  assert.deepEqual(afterRestart[0].children.map((child) => child.id), ["child-a1", "child-a2"]);
+});

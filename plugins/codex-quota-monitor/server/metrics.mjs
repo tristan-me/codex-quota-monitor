@@ -163,12 +163,16 @@ export class Estimator {
       calibratedPercent: 0,
       sessionLedger: {},
       groupObservationSeconds: {},
+      sessionOrder: [],
       sessionTrackingSince: saved.since || Date.now(),
       ...saved,
     };
     const s = this.state;
     s.sessionLedger ||= {};
     s.groupObservationSeconds ||= {};
+    s.sessionOrder = Array.isArray(s.sessionOrder)
+      ? [...new Set(s.sessionOrder.filter((id) => typeof id === "string" && id))]
+      : [];
     // Preserve allocations from the prior format. A zero allocation did not prove
     // that a historical task consumed nothing, so it is not migrated as evidence.
     for (const [id, amount] of Object.entries(s.totals || {})) {
@@ -392,13 +396,30 @@ export class Estimator {
 
   sessions(threads, now) {
     const s = this.state;
-    return groupThreads(threads)
+    const groups = groupThreads(threads);
+    const known = new Set(s.sessionOrder);
+    for (const group of groups) {
+      if (!known.has(group.id)) {
+        s.sessionOrder.push(group.id);
+        known.add(group.id);
+      }
+      for (const member of group.members) {
+        if (!known.has(member.id)) {
+          s.sessionOrder.push(member.id);
+          known.add(member.id);
+        }
+      }
+    }
+    const order = new Map(s.sessionOrder.map((id, index) => [id, index]));
+    const orderOf = (thread) => order.get(thread.id) ?? Number.MAX_SAFE_INTEGER;
+    return groups
       .map((group) => {
-        const own = this.individual(
-          group.members.find((t) => t.id === group.id) || group,
-          now,
-        );
-        const rows = group.members.map((t) => this.individual(t, now));
+        const members = group.members
+          .slice()
+          .sort((a, b) => orderOf(a) - orderOf(b));
+        const ownThread = members.find((t) => t.id === group.id) || group;
+        const own = this.individual(ownThread, now);
+        const rows = members.map((t) => this.individual(t, now));
         const children = rows.filter((t) => t.id !== group.id);
         const known = rows.some((t) => t.estimatedPercent !== null);
         const estimated = known
@@ -446,10 +467,6 @@ export class Estimator {
           ownObservationSeconds: own.observationSeconds,
         };
       })
-      .sort(
-        (a, b) =>
-          ({ active: 0, unknown: 1, idle: 2 })[a.status] -
-          { active: 0, unknown: 1, idle: 2 }[b.status],
-      );
+      .sort((a, b) => orderOf(a) - orderOf(b));
   }
 }
