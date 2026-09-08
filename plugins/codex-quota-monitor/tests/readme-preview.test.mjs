@@ -70,6 +70,10 @@ test("preview sessions have safe demo IDs, expandable children, and rate fields"
   const interfaceTests = interfaceRoot.children.find((child) => child.id === "demo-interface-tests");
   assert.equal(interfaceRoot.totalElapsedSeconds, 55 * 60);
   assert.equal(interfaceTests.totalElapsedSeconds, 41 * 60);
+  assert.equal(interfaceRoot.latestTurnChildCount, 2);
+  assert.equal(interfaceRoot.latestTurnElapsedSeconds, 25 * 60);
+  assert.ok(interfaceRoot.latestTurnEstimatedPercent > interfaceRoot.ownLatestTurnEstimatedPercent);
+  assert.ok(interfaceRoot.latestTurnEstimatedPercent < interfaceRoot.totalEstimatedPercent);
   assert.equal(interfaceRoot.observationSeconds, 1224);
   assert.ok(Math.abs(interfaceRoot.averageSecondsPerPercent * interfaceRoot.totalEstimatedPercent - 3300) < 1e-8);
   assert.ok(interfaceTests.latestTurnElapsedSeconds <= interfaceTests.totalElapsedSeconds);

@@ -132,7 +132,7 @@ function localEntries(sessions) {
       );
       if (hasRootRate) entries.push(root);
       for (const child of children) {
-        if (child && typeof child === "object") entries.push(child);
+        if (child && typeof child === "object") entries.push(ownSessionView(child));
       }
     } else {
       entries.push(ownSessionView(session));

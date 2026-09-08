@@ -208,3 +208,22 @@ test("current model samples are preferred to old historical averages", () => {
   });
   assert.equal(row(overview, "gpt-5.6-terra", "medium").secondsPerPercent, 100);
 });
+
+test("nested child family totals do not replace its own model rate", () => {
+  const overview = buildModelOverview({
+    models: [model("gpt-5.6-terra", ["medium"]), model("gpt-5.6-luna", ["high"])],
+    sessions: [{
+      model: "gpt-5.6-terra", reasoningEffort: "medium",
+      ownStatus: "active", ownSecondsPerPercent: 120, ownObservationSeconds: 120,
+      children: [{
+        model: "gpt-5.6-luna", reasoningEffort: "high", status: "active",
+        totalEstimatedPercent: 3, secondsPerPercent: 10, averageSecondsPerPercent: 10,
+        ownStatus: "active", ownEstimatedPercent: 1, ownSecondsPerPercent: 60,
+        ownAverageSecondsPerPercent: 60, ownObservationSeconds: 60,
+        latestTurnSecondsPerPercent: 10,
+      }],
+    }], state: {}, now,
+  });
+  assert.equal(row(overview, "gpt-5.6-luna", "high").secondsPerPercent, 60);
+  assert.equal(row(overview, "gpt-5.6-terra", "medium").secondsPerPercent, 120);
+});

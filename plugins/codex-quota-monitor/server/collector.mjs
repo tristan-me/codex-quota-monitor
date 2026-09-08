@@ -554,7 +554,7 @@ export class Collector {
       .map((session) => {
         if (!this.settings.paused && !stale)
           return { ...session, observationSince };
-        const ownActive = (session.ownStatus || session.status) === "active";
+        const latestActive = (session.latestTurnStatus || session.ownStatus || session.status) === "active";
         return {
           ...session,
           observationSince,
@@ -562,24 +562,29 @@ export class Collector {
           rateSource: null,
           rateEstimated: false,
           ownSecondsPerPercent: null,
+          ownLatestTurnSecondsPerPercent: (session.ownStatus || session.status) === "active"
+            ? null : session.ownLatestTurnSecondsPerPercent,
           // Completed-turn predictions use retained local evidence. Active
           // forecasts still require a fresh account sample and are suppressed.
-          latestTurnSecondsPerPercent: ownActive
+          latestTurnSecondsPerPercent: latestActive
             ? null : session.latestTurnSecondsPerPercent,
-          latestTurnRateSource: ownActive
+          latestTurnRateSource: latestActive
             ? null : session.latestTurnRateSource,
-          latestTurnRateEstimated: ownActive
+          latestTurnRateEstimated: latestActive
             ? false : session.latestTurnRateEstimated,
           children: (session.children || []).map((child) => ({
             ...child,
             secondsPerPercent: null,
+            ownSecondsPerPercent: null,
+            ownLatestTurnSecondsPerPercent: (child.ownStatus || child.status) === "active"
+              ? null : child.ownLatestTurnSecondsPerPercent,
             rateSource: null,
             rateEstimated: false,
-            latestTurnSecondsPerPercent: child.status === "active"
+            latestTurnSecondsPerPercent: (child.latestTurnStatus || child.status) === "active"
               ? null : child.latestTurnSecondsPerPercent,
-            latestTurnRateSource: child.status === "active"
+            latestTurnRateSource: (child.latestTurnStatus || child.status) === "active"
               ? null : child.latestTurnRateSource,
-            latestTurnRateEstimated: child.status === "active"
+            latestTurnRateEstimated: (child.latestTurnStatus || child.status) === "active"
               ? false : child.latestTurnRateEstimated,
           })),
         };

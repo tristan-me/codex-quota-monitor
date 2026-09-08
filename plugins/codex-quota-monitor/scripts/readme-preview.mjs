@@ -250,26 +250,40 @@ function readmeSessions(now) {
     averageSecondsPerPercent: item.estimatedPercent > 0 ? unionSeconds([historyInterval, latestInterval(item)]) / item.estimatedPercent : null,
     latestTurnElapsedSeconds: Math.max(0, (latestInterval(item)[1] - latestInterval(item)[0]) / 1000),
     latestTurnEstimatedPercent: latestEstimate,
+    latestTurnStartedAt: item.startedAt,
+    latestTurnChildCount: 0,
+    latestTurnStatus: item.status,
     latestTurnSecondsPerPercent: item.secondsPerPercent || (latestEstimate > 0 ? Math.max(0, (latestInterval(item)[1] - latestInterval(item)[0]) / 1000) / latestEstimate : null),
   });
   return [rootInterface, rootTests, rootDocs, rootRelease].map(root=>{
     const own=ownMetrics(root), children=root.children.map(ownMetrics);
     const total=own.estimatedPercent+children.reduce((sum,item)=>sum+item.estimatedPercent,0);
     const totalElapsedSeconds=unionSeconds([historyInterval, ...[root, ...root.children].map(latestInterval)]);
+    const latestTurnElapsedSeconds=unionSeconds([root, ...root.children].map(latestInterval));
+    const latestTurnEstimatedPercent=[own,...children].reduce((sum,item)=>sum+item.estimatedPercent*.4,0);
+    const latestTurnStartedAt=root.startedAt;
     const observedGroupSeconds=unionSeconds([own,...children].flatMap(observedIntervals));
     const activeRate=[own,...children].reduce((sum,item)=>sum+(item.secondsPerPercent?1/item.secondsPerPercent:0),0);
     const ownWithTotals=enrichOwn(own, own.estimatedPercent === null ? null : own.estimatedPercent * 0.4);
-    const childrenWithTotals=children.map(item=>enrichOwn(item, item.estimatedPercent === null ? null : item.estimatedPercent * 0.4));
+    const childrenWithTotals=children.map(item=>enrichOwn(item, item.estimatedPercent === null ? null : item.estimatedPercent * 0.4)).sort((a,b)=>b.latestTurnStartedAt-a.latestTurnStartedAt);
     return {...ownWithTotals,children:childrenWithTotals,childCount:childrenWithTotals.length,estimatedPercent:total,
       totalElapsedSeconds,totalEstimatedPercent:total,
       observationSeconds:observedGroupSeconds,
       secondsPerPercent:root.status==='active'&&activeRate>0?1/activeRate:null,
-      latestTurnSecondsPerPercent:ownWithTotals.latestTurnSecondsPerPercent,
+      latestTurnElapsedSeconds,
+      latestTurnEstimatedPercent,
+      latestTurnSecondsPerPercent:latestTurnEstimatedPercent>0?latestTurnElapsedSeconds/latestTurnEstimatedPercent:null,
+      latestTurnChildCount:childrenWithTotals.length,
+      latestTurnStartedAt:Number.isFinite(latestTurnStartedAt)?latestTurnStartedAt:null,
       averageSecondsPerPercent:total>0?totalElapsedSeconds/total:null,
       ownStatus:own.status,ownEstimatedPercent:own.estimatedPercent,
       ownSecondsPerPercent:own.secondsPerPercent,ownAverageSecondsPerPercent:own.averageSecondsPerPercent,
-      ownObservationSeconds:own.observationSeconds,observationSince:now-75*MINUTE_MS};
-  });
+      ownObservationSeconds:own.observationSeconds,
+      ownLatestTurnElapsedSeconds:ownWithTotals.latestTurnElapsedSeconds,
+      ownLatestTurnEstimatedPercent:ownWithTotals.latestTurnEstimatedPercent,
+      ownLatestTurnSecondsPerPercent:ownWithTotals.latestTurnSecondsPerPercent,
+      observationSince:now-75*MINUTE_MS};
+  }).sort((a,b)=>b.latestTurnStartedAt-a.latestTurnStartedAt);
 }
 
 function syntheticResetRadar(now, supplied) {

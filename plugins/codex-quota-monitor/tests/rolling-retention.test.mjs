@@ -402,7 +402,7 @@ test("window changes and restart retain only confirmed in-window data", () => {
   assert.deepEqual(restored.state.sessionLedger, {});
 });
 
-test("parent totals union overlapping child time while latest metrics stay on the parent", () => {
+test("parent latest metrics include child work launched during the same turn", () => {
   const e = new Estimator({ legacyAggregateMigrated: true });
   e.state.rollingStartedAt = now - hour;
   e.state.rollingAllocations = [
@@ -430,7 +430,11 @@ test("parent totals union overlapping child time while latest metrics stay on th
   assert.equal(row.observationSeconds, 30 * 60);
   assert.equal(row.totalEstimatedPercent, 3);
   assert.equal(row.averageSecondsPerPercent, 600);
-  assert.equal(row.latestTurnEstimatedPercent, 1);
+  assert.equal(row.latestTurnEstimatedPercent, 3);
+  assert.equal(row.ownLatestTurnEstimatedPercent, 1);
+  assert.equal(row.latestTurnChildCount, 1);
+  assert.equal(row.latestTurnElapsedSeconds, 30 * 60);
+  assert.equal(row.latestTurnSecondsPerPercent, 600);
   assert.equal(row.children[0].latestTurnEstimatedPercent, 2);
 });
 

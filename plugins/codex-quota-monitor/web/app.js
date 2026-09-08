@@ -575,10 +575,19 @@
       totalElapsedSeconds: sessionMetric(session, 'totalElapsedSeconds', 'observationSeconds'),
       totalEstimatedPercent: sessionMetric(session, 'totalEstimatedPercent', 'estimatedPercent', true),
       averageSecondsPerPercent: sessionMetric(session, 'averageSecondsPerPercent', 'averageSecondsPerPercent'),
-      latestTurnElapsedSeconds: sessionMetric(session, 'latestTurnElapsedSeconds', 'elapsedSeconds'),
-      latestTurnEstimatedPercent: finiteNumber(session.latestTurnEstimatedPercent),
-      secondsPerPercent: sessionMetric(session, 'latestTurnSecondsPerPercent', 'secondsPerPercent'),
+      latestTurnElapsedSeconds: sessionMetric(session, 'latestTurnElapsedSeconds', Object.prototype.hasOwnProperty.call(session, 'ownLatestTurnElapsedSeconds') ? 'ownLatestTurnElapsedSeconds' : 'elapsedSeconds'),
+      latestTurnEstimatedPercent: Object.prototype.hasOwnProperty.call(session, 'latestTurnEstimatedPercent')
+        ? finiteNumber(session.latestTurnEstimatedPercent)
+        : finiteNumber(session.ownLatestTurnEstimatedPercent),
+      secondsPerPercent: sessionMetric(session, 'latestTurnSecondsPerPercent', Object.prototype.hasOwnProperty.call(session, 'ownLatestTurnSecondsPerPercent') ? 'ownLatestTurnSecondsPerPercent' : 'secondsPerPercent'),
     };
+  }
+
+  function latestTurnScopeText(session) {
+    const count = finiteNumber(session.latestTurnChildCount);
+    if (count === null) return '最近一次的子任务归属待确认。';
+    if (count <= 0) return '最近一次仅含本任务本轮。';
+    return `最近一次含本轮启动的 ${Math.round(count)} 个子任务。`;
   }
 
   function sessionFilterEntries(sessions, tokens) {
@@ -690,13 +699,16 @@
 
       if (children.length > 0) {
         const ownQuota = finiteNumber(session.ownEstimatedPercent);
-        const childQuotas = children.map(child => sessionMetric(child, 'totalEstimatedPercent', 'estimatedPercent'));
+        const childQuotas = children.map((child) => {
+          const own = finiteNumber(child.ownEstimatedPercent);
+          return own !== null ? own : sessionMetric(child, 'totalEstimatedPercent', 'estimatedPercent');
+        });
         const knownChildQuotas = childQuotas.filter(value => value !== null);
         const childQuota = knownChildQuotas.reduce((sum, value) => sum + value, 0);
         const childText = knownChildQuotas.length
           ? `${formatPercent(childQuota)}${knownChildQuotas.length < children.length ? '（部分样本）' : ''}`
           : '等待采样';
-        row.append(textElement('p', 'session-scope-note', `总额度拆分：本任务累计 ${ownQuota === null ? '等待采样' : formatPercent(ownQuota)}，子任务合计 ${childText}。并行耗时不重复累加；最近一次仅本任务本轮。`));
+        row.append(textElement('p', 'session-scope-note', `总额度拆分：本任务累计 ${ownQuota === null ? '等待采样' : formatPercent(ownQuota)}，子任务合计 ${childText}。并行耗时不重复累加；${latestTurnScopeText(session)}`));
         const key = safeText(session.id, session.title || `root-${start + index}`);
         const matchingChildren = tokens.length ? children.filter((child) => sessionMatches(child, tokens)) : [];
         const childSearchMatch = tokens.length > 0 && matchingChildren.length > 0;
@@ -760,6 +772,10 @@
             childLine.append(textElement('span', 'session-stat-line-block', `任务总耗时${formatDuration(childMetrics.totalElapsedSeconds)}，任务消耗额度${formatPercent(childMetrics.totalEstimatedPercent)}，平均每 1% 额度能撑 ${formatDuration(childMetrics.averageSecondsPerPercent)}；`));
             childLine.append(textElement('span', 'session-stat-line-block', `最近一次会话耗时${formatDuration(childMetrics.latestTurnElapsedSeconds)}，最近一次会话消耗额度${formatPercent(childMetrics.latestTurnEstimatedPercent)}，预计接下来每 1% 额度能撑 ${formatDuration(childMetrics.secondsPerPercent)}`));
             childRow.append(childLine);
+            const latestChildCount = finiteNumber(child.latestTurnChildCount);
+            if (latestChildCount !== null && latestChildCount > 0) {
+              childRow.append(textElement('p', 'session-scope-note', `最近一次含本轮启动的 ${Math.round(latestChildCount)} 个子任务。`));
+            }
             childList.append(childRow);
           });
           row.append(childList);

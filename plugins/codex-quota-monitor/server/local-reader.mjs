@@ -462,6 +462,13 @@ function readLegacyRollout(file, diagnostics) {
     updatedAt,
     latestTurn: latest,
     executionHistory: {
+      turns: [...state.turns.values()].map((turn) => ({
+        turnId: turn.turnId,
+        startedAt: turn.startedAt,
+        completedAt: turn.completedAt,
+        durationMs: turn.durationMs ?? null,
+        status: statusClass(turn.status),
+      })),
       intervals: [...state.turns.values()]
         .filter((turn) => statusClass(turn.status) === "idle")
         .map(intervalFromTurn)
@@ -531,6 +538,13 @@ function executionHistoryFromRows(rows, partial = false) {
     }
   }
   return {
+    turns: (rows || []).map(latestTurnFromRow).filter(Boolean).map((turn) => ({
+      turnId: turn.turnId,
+      startedAt: turn.startedAt,
+      completedAt: turn.completedAt,
+      durationMs: turn.durationMs,
+      status: statusClass(turn.status),
+    })),
     intervals: intervals.sort((left, right) => left[0] - right[0] || left[1] - right[1]),
     coverage: partial || incompleteEvidence || !intervals.length ? "partial" : "local-records",
     source: "thread_history",
@@ -1000,6 +1014,7 @@ export class LocalReader {
           model: safeText(row.model),
           reasoningEffort: safeText(row.reasoning_effort),
           parentThreadId: sourceInfo.parentThreadId,
+          createdAt: normalizeTimestamp(row.created_at_ms) ?? normalizeTimestamp(row.created_at),
           source: threadSource || sourceInfo.kind || null,
           status: activity.status,
           startedAt: latestTurn?.startedAt ?? null,

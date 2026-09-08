@@ -94,7 +94,7 @@ test("unknown token values are baselines, not zero-consumption evidence", () => 
   assert.equal(e.state.unattributedPercent, 1);
 });
 
-test("root totals include children once but latest turn belongs to the root itself", () => {
+test("root totals include children once and the latest family includes a same-turn child", () => {
   const e = new Estimator();
   const root = (tokens) => task("root-turn", tokens, 0, {
     executionHistory: { intervals: [[ms(-100), ms(-50)]], coverage: "local-records" },
@@ -105,7 +105,7 @@ test("root totals include children once but latest turn belongs to the root itse
   e.local([root(100), child(100)], ms(30)); e.quota(quota(11), ms(30), "account");
   const row = e.sessions([root(100), child(100)], ms(30))[0];
   assert.equal(row.totalEstimatedPercent, 1);
-  assert.equal(row.latestTurnEstimatedPercent, .5);
+  assert.equal(row.latestTurnEstimatedPercent, 1);
   assert.equal(row.children[0].latestTurnEstimatedPercent, .5);
   assert.equal(row.totalElapsedSeconds, 80);
   assert.equal(row.averageSecondsPerPercent, 80);
@@ -129,15 +129,17 @@ test("advancing a projection ordinal does not start another turn", () => {
   assert.equal(view(e, task("a", 100), 30).latestTurnEstimatedPercent, 1);
 });
 
-test("running groups move ahead while each status group keeps its saved rank", () => {
+test("newer latest-turn starts move ahead regardless of active status", () => {
   const e = new Estimator();
-  const a = { ...task("a", 0), id: "a" };
-  const b = { ...task("b", 0), id: "b" };
-  const c = { ...task("c", 0), id: "c" };
+  const a = { ...task("a", 0, 0), id: "a" };
+  const b = { ...task("b", 0, 0), id: "b" };
+  const c = { ...task("c", 0, 0), id: "c" };
   assert.deepEqual(e.sessions([a, b, c], ms(0)).map(x => x.id), ["a", "b", "c"]);
   const idleA = { ...a, status: "idle", completedAt: ms(5) };
-  assert.deepEqual(e.sessions([c, idleA, b], ms(5)).map(x => x.id), ["b", "c", "a"]);
-  assert.deepEqual(e.sessions([{ ...b, status: "idle" }, c, idleA], ms(6)).map(x => x.id), ["c", "a", "b"]);
+  const newerB = { ...b, activityEvidence: { turnId: "b-new" }, startedAt: ms(2) };
+  const middleC = { ...c, activityEvidence: { turnId: "c-new" }, startedAt: ms(1) };
+  assert.deepEqual(e.sessions([middleC, idleA, newerB], ms(5)).map(x => x.id), ["b", "c", "a"]);
+  assert.deepEqual(e.sessions([{ ...newerB, status: "idle", completedAt: ms(6) }, middleC, idleA], ms(6)).map(x => x.id), ["b", "c", "a"]);
 });
 
 test("regressed and unknown projections do not claim an old duration as the latest turn", () => {
@@ -165,13 +167,13 @@ test("a restored terminal projection becoming active does not erase confirmed al
   assert.equal(view(restored, task("a", 100), 10).latestTurnEstimatedPercent, 1);
 });
 
-test("remaining active children move ahead without changing their saved relative order", () => {
+test("children sort by their latest own turn start", () => {
   const e = new Estimator();
   const root = task("root", 0, 0, { status: "idle", completedAt: ms(1) });
-  const first = { ...task("first", 0), id: "first", parentThreadId: "task" };
-  const second = { ...task("second", 0), id: "second", parentThreadId: "task" };
+  const first = { ...task("first", 0, 0), id: "first", parentThreadId: "task" };
+  const second = { ...task("second", 0, 1), id: "second", parentThreadId: "task" };
   e.sessions([root, first, second], ms(2));
-  const result = e.sessions([{ ...first, status: "idle" }, root, second], ms(3))[0];
+  const result = e.sessions([{ ...first, status: "idle", completedAt: ms(3) }, root, second], ms(3))[0];
   assert.equal(result.status, "active");
   assert.deepEqual(result.children.map(row => row.id), ["second", "first"]);
 });

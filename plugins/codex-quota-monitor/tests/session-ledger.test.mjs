@@ -163,13 +163,13 @@ test("session order stays stable through input shuffles, status changes, gaps, n
   const rootBIdle = row("root-b", 0, "idle");
   const rootC = row("root-c", 0, "active");
   const shuffled = e.sessions([rootC, rootBIdle, childA2, rootAIdle, childA1], now + 1000);
-  assert.deepEqual(shuffled.map((session) => session.id), ["root-a", "root-c", "root-b"]);
+  assert.deepEqual(shuffled.map((session) => session.id), ["root-a", "root-b", "root-c"]);
   assert.deepEqual(shuffled[0].children.map((child) => child.id), ["child-a1", "child-a2"]);
 
   const missing = e.sessions([rootC, rootAIdle, childA2, childA1], now + 2000);
   assert.deepEqual(missing.map((session) => session.id), ["root-a", "root-c"]);
   const restored = e.sessions([rootC, rootBIdle, rootAIdle, childA2, childA1], now + 3000);
-  assert.deepEqual(restored.map((session) => session.id), ["root-a", "root-c", "root-b"]);
+  assert.deepEqual(restored.map((session) => session.id), ["root-a", "root-b", "root-c"]);
   assert.deepEqual(restored[0].children.map((child) => child.id), ["child-a1", "child-a2"]);
   assert.deepEqual(e.state.sessionOrder, ["root-a", "child-a1", "root-b", "root-c", "child-a2"]);
 

@@ -358,6 +358,10 @@ test("preserves latest turn identity and bounded completed execution intervals",
   assert.equal(multi.activityEvidence.lastTurnDurationMs, null);
   assert.equal(multi.executionHistory.source, "thread_history");
   assert.equal(multi.executionHistory.coverage, "partial");
+  assert.ok(multi.executionHistory.turns.some((turn) => turn.turnId === "turn-one" &&
+    turn.startedAt === (seconds - 1000) * 1000 && turn.status === "idle"));
+  assert.ok(multi.executionHistory.turns.some((turn) => turn.turnId === "turn-three" &&
+    turn.startedAt === (seconds - 30) * 1000 && turn.status === "active"));
   assert.deepEqual(multi.executionHistory.intervals, [
     [(seconds - 1000) * 1000, (seconds - 900) * 1000],
     [(seconds - 950) * 1000, (seconds - 850) * 1000],
@@ -626,6 +630,8 @@ test("uses bounded legacy rollout parsing for lifecycle and token_count evidence
   assert.equal(complete.activityEvidence.turnSequence, null);
   assert.equal(complete.executionHistory.source, "legacy_tail");
   assert.equal(complete.executionHistory.coverage, "partial");
+  assert.ok(complete.executionHistory.turns.some((turn) =>
+    turn.startedAt === (nowSeconds - 20) * 1000 && turn.status === "idle"));
   assert.deepEqual(complete.executionHistory.intervals, [
     [(nowSeconds - 20) * 1000, (nowSeconds - 1) * 1000],
   ]);
