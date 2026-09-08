@@ -9,6 +9,7 @@ const RECENT_THREAD_LIMIT = 200;
 const MAX_ROLLOUT_TAIL_BYTES = 8 * 1024 * 1024;
 const MAX_ROLLOUT_LINE_BYTES = 2 * 1024 * 1024;
 const SQLITE_BIND_CHUNK = 500;
+const MAX_TURN_HISTORY_PER_THREAD = 5_000;
 
 const ACTIVE_STATUSES = new Set([
   "active",
@@ -296,12 +297,14 @@ function parseLegacyEventLine(line, state, sequence) {
   const turnIdValue = eventField(payload, ["turn_id", "turnId"]);
   const turnId =
     typeof turnIdValue === "string" && turnIdValue ? turnIdValue : null;
-  const startedAt =
-    normalizeTimestamp(eventField(payload, ["started_at", "startedAt"])) ??
-    eventAt;
-  const completedAt =
-    normalizeTimestamp(eventField(payload, ["completed_at", "completedAt"])) ??
-    eventAt;
+  const explicitStartedAt = normalizeTimestamp(
+    eventField(payload, ["started_at", "startedAt"]),
+  );
+  const explicitCompletedAt = normalizeTimestamp(
+    eventField(payload, ["completed_at", "completedAt"]),
+  );
+  const startedAt = explicitStartedAt ?? eventAt;
+  const completedAt = explicitCompletedAt ?? eventAt;
   const current = turnId || "__rollout_latest__";
 
   if (type === "task_started") {
@@ -312,6 +315,7 @@ function parseLegacyEventLine(line, state, sequence) {
       startedAt,
       completedAt: null,
       eventAt: eventAt ?? startedAt,
+      source: "legacy_tail",
       sequence,
     });
     if (!previous || sequence >= previous.sequence) state.latestKey = current;
@@ -323,18 +327,24 @@ function parseLegacyEventLine(line, state, sequence) {
     const previous =
       state.turns.get(current) || state.turns.get("__rollout_latest__");
     const terminalStatus = type === "task_complete" ? "completed" : "aborted";
+    const durationMs = finiteNumber(
+      eventField(payload, ["duration_ms", "durationMs"]),
+    );
+    const completed = explicitCompletedAt ?? eventAt ?? previous?.completedAt ?? null;
+    const started =
+      previous?.startedAt ??
+      explicitStartedAt ??
+      (durationMs !== null && durationMs > 0 && completed !== null
+        ? completed - durationMs
+        : null);
     state.turns.set(current, {
       turnId: turnId || previous?.turnId || null,
       status: terminalStatus,
-      startedAt: previous?.startedAt ?? startedAt,
-      completedAt:
-        normalizeTimestamp(
-          eventField(payload, ["completed_at", "completedAt"]),
-        ) ??
-        eventAt ??
-        previous?.completedAt ??
-        null,
+      startedAt: started,
+      completedAt: completed,
       eventAt: eventAt ?? completedAt ?? previous?.eventAt ?? null,
+      durationMs,
+      source: "legacy_tail",
       sequence,
     });
     state.latestKey = current;
@@ -448,6 +458,14 @@ function readLegacyRollout(file, diagnostics) {
     tokenDelta: state.tokenDelta,
     updatedAt,
     latestTurn: latest,
+    executionHistory: {
+      intervals: [...state.turns.values()]
+        .filter((turn) => statusClass(turn.status) === "idle")
+        .map(intervalFromTurn)
+        .filter(Boolean),
+      coverage: "partial",
+      source: "legacy_tail",
+    },
     eventCount: state.eventCount,
     source: "rollout_jsonl",
   };
@@ -461,8 +479,58 @@ function latestTurnFromRow(row) {
     startedAt: normalizeTimestamp(row.started_at),
     completedAt: normalizeTimestamp(row.completed_at),
     eventAt: null,
-    sequence: finiteNumber(row.rollout_ordinal) ?? 0,
+    sequence: finiteNumber(row.rollout_ordinal),
     durationMs: finiteNumber(row.duration_ms),
+    source: "thread_history",
+  };
+}
+
+function intervalFromTurn(turn) {
+  return intervalInfoFromTurn(turn)?.interval || null;
+}
+
+function intervalInfoFromTurn(turn) {
+  if (!turn || statusClass(turn.status) !== "idle") {
+    return { interval: null, inferred: false };
+  }
+  const startedAt = normalizeTimestamp(turn.startedAt ?? turn.started_at);
+  const completedAt = normalizeTimestamp(turn.completedAt ?? turn.completed_at);
+  const durationMs = finiteNumber(turn.durationMs ?? turn.duration_ms);
+  if (startedAt !== null && completedAt !== null && completedAt > startedAt) {
+    return { interval: [startedAt, completedAt], inferred: false };
+  }
+  if (durationMs !== null && durationMs > 0) {
+    if (startedAt !== null) {
+      return { interval: [startedAt, startedAt + durationMs], inferred: true };
+    }
+    if (completedAt !== null) {
+      return { interval: [completedAt - durationMs, completedAt], inferred: true };
+    }
+  }
+  return { interval: null, inferred: true };
+}
+
+function executionHistoryFromRows(rows, partial = false) {
+  const intervals = [];
+  let incompleteEvidence = false;
+  for (const row of rows || []) {
+    const normalized = {
+      status: row.status,
+      startedAt: row.started_at,
+      completedAt: row.completed_at,
+      durationMs: row.duration_ms,
+    };
+    if (statusClass(normalized.status) === "active") continue;
+    const evidence = intervalInfoFromTurn(normalized);
+    if (evidence.interval) intervals.push(evidence.interval);
+    if (evidence.inferred || (!evidence.interval && normalizeStatus(normalized.status))) {
+      incompleteEvidence = true;
+    }
+  }
+  return {
+    intervals: intervals.sort((left, right) => left[0] - right[0] || left[1] - right[1]),
+    coverage: partial || incompleteEvidence || !intervals.length ? "partial" : "local-records",
+    source: "thread_history",
   };
 }
 
@@ -476,11 +544,36 @@ function turnSortValue(row) {
   );
 }
 
-function latestTurnRows(db, columns, ids) {
-  if (!ids.length || !columns.has("thread_id")) return new Map();
+function isNewerTurnRow(candidate, current) {
+  if (!current) return true;
+  const candidateRow = finiteNumber(candidate?.__local_reader_row_number);
+  const currentRow = finiteNumber(current?.__local_reader_row_number);
+  if (candidateRow !== null || currentRow !== null) {
+    if (candidateRow === null) return false;
+    if (currentRow === null) return true;
+    return candidateRow < currentRow;
+  }
+  const candidateValue = turnSortValue(candidate);
+  const currentValue = turnSortValue(current);
+  if (candidateValue !== currentValue) return candidateValue > currentValue;
+  const candidateCompleted = normalizeTimestamp(candidate?.completed_at) ?? 0;
+  const currentCompleted = normalizeTimestamp(current?.completed_at) ?? 0;
+  if (candidateCompleted !== currentCompleted) return candidateCompleted > currentCompleted;
+  const candidateStarted = normalizeTimestamp(candidate?.started_at) ?? 0;
+  const currentStarted = normalizeTimestamp(current?.started_at) ?? 0;
+  return candidateStarted > currentStarted;
+}
+
+function turnHistoryRows(db, columns, ids) {
+  if (!ids.length || !columns.has("thread_id")) {
+    return { rowsByThread: new Map(), partialThreads: new Set() };
+  }
   const selected = TURN_COLUMNS.filter((name) => columns.has(name));
-  if (!selected.includes("status")) return new Map();
-  const latest = new Map();
+  if (!selected.includes("status")) {
+    return { rowsByThread: new Map(), partialThreads: new Set(ids) };
+  }
+  const rowsByThread = new Map();
+  const partialThreads = new Set();
   const orderParts = [
     columns.has("rollout_ordinal") &&
       `COALESCE(${quoteIdentifier("rollout_ordinal")}, -9223372036854775808) DESC`,
@@ -494,7 +587,7 @@ function latestTurnRows(db, columns, ids) {
     const placeholders = chunk.map(() => "?").join(", ");
     const selectedSql = selected.map(quoteIdentifier).join(", ");
     const orderSql = orderParts.length ? orderParts.join(", ") : "rowid DESC";
-    const sql = `SELECT ${selectedSql}
+    const sql = `SELECT ${selectedSql}, "__local_reader_row_number"
       FROM (
         SELECT ${selectedSql}, ROW_NUMBER() OVER (
           PARTITION BY ${quoteIdentifier("thread_id")} ORDER BY ${orderSql}
@@ -502,14 +595,20 @@ function latestTurnRows(db, columns, ids) {
         FROM ${quoteIdentifier("thread_turns")}
         WHERE ${quoteIdentifier("thread_id")} IN (${placeholders})
       )
-      WHERE "__local_reader_row_number" = 1`;
+      WHERE "__local_reader_row_number" <= ${MAX_TURN_HISTORY_PER_THREAD}`;
     const rows = db.prepare(sql).all(...chunk);
     for (const row of rows) {
       const id = safeText(row.thread_id);
-      if (id) latest.set(id, row);
+      if (!id) continue;
+      const list = rowsByThread.get(id) || [];
+      list.push(row);
+      rowsByThread.set(id, list);
+      if (finiteNumber(row.__local_reader_row_number) >= MAX_TURN_HISTORY_PER_THREAD) {
+        partialThreads.add(id);
+      }
     }
   }
-  return latest;
+  return { rowsByThread, partialThreads };
 }
 
 function recentActiveTurnRows(db, columns, cutoffMs) {
@@ -605,12 +704,24 @@ function resolveRolloutPath(rawPath, codexHome) {
 }
 
 function activityEvidence({ source, latestTurn, stale, eventCount = 0 }) {
+  const lastTurnDurationMs = intervalFromTurn(latestTurn)?.[1] !== undefined
+    ? intervalFromTurn(latestTurn)[1] - intervalFromTurn(latestTurn)[0]
+    : null;
   return {
     source,
     turnId: latestTurn?.turnId ?? null,
+    turnSequence:
+      source === "thread_history" && Number.isFinite(latestTurn?.sequence)
+        ? latestTurn.sequence
+        : null,
     latestStatus: normalizeStatus(latestTurn?.status),
     startedAt: latestTurn?.startedAt ?? null,
     completedAt: latestTurn?.completedAt ?? null,
+    lastTurnDurationMs:
+      statusClass(latestTurn?.status) === "idle" &&
+      Number.isFinite(latestTurn?.durationMs) && latestTurn.durationMs > 0
+        ? latestTurn.durationMs
+        : lastTurnDurationMs,
     stale: Boolean(stale),
     eventCount: Number.isFinite(eventCount) ? eventCount : 0,
   };
@@ -663,6 +774,8 @@ export class LocalReader {
       rolloutErrors: 0,
       malformedRolloutLines: 0,
       guardiansExcluded: 0,
+      executionHistoryPartialThreads: 0,
+      executionHistoryTurnCap: MAX_TURN_HISTORY_PER_THREAD,
       truncated: false,
       returned: 0,
     };
@@ -696,6 +809,7 @@ export class LocalReader {
     let stateColumns = new Set();
     let historyColumns = new Set();
     let activeTurnRows = [];
+    let historyTableCompatible = false;
 
     try {
       if (stateDb && hasTable(stateDb, "threads")) {
@@ -731,6 +845,7 @@ export class LocalReader {
             "thread_turns table is missing thread_id or status",
           );
         } else {
+          historyTableCompatible = true;
           activeTurnRows = recentActiveTurnRows(
             historyDb,
             historyColumns,
@@ -763,18 +878,30 @@ export class LocalReader {
       }
 
       let latestTurns = new Map();
+      let turnHistoryById = new Map();
+      let partialHistoryThreads = new Set();
       if (historyDb && historyColumns.has("thread_id")) {
-        latestTurns = latestTurnRows(historyDb, historyColumns, [
+        const history = turnHistoryRows(historyDb, historyColumns, [
           ...threadsById.keys(),
         ]);
+        turnHistoryById = history.rowsByThread;
+        partialHistoryThreads = history.partialThreads;
+        for (const [id, rows] of turnHistoryById.entries()) {
+          const latest = rows.reduce(
+            (current, row) => (isNewerTurnRow(row, current) ? row : current),
+            null,
+          );
+          if (latest) latestTurns.set(id, latest);
+        }
         // Active rows fetched for the complement are already useful if the
         // corresponding thread has no state row in the latest page.
         for (const row of activeTurnRows) {
           const id = safeText(row.thread_id);
           if (!id) continue;
           const current = latestTurns.get(id);
-          if (!current || turnSortValue(row) >= turnSortValue(current))
+          if (isNewerTurnRow(row, current))
             latestTurns.set(id, row);
+          if (!turnHistoryById.has(id)) turnHistoryById.set(id, [row]);
         }
       }
 
@@ -802,9 +929,20 @@ export class LocalReader {
           : null;
         let tokenDelta = null;
         let tokens = rowTokens(row.tokens_used);
+        let tokensKnown = finiteNumber(row.tokens_used) !== null && finiteNumber(row.tokens_used) >= 0;
         let updatedAt = rowTimestamp(row) ?? now;
         let activitySource = "thread_history";
         let eventCount = 0;
+        let executionHistory = historyTableCompatible
+          ? executionHistoryFromRows(
+              turnHistoryById.get(id) || [],
+              partialHistoryThreads.has(id),
+            )
+          : {
+              intervals: [],
+              coverage: "partial",
+              source: "thread_history",
+            };
         const historyMode = safeText(row.history_mode);
         const rolloutPath = resolveRolloutPath(
           row.rollout_path,
@@ -830,11 +968,15 @@ export class LocalReader {
               finiteNumber(row.tokens_used) === null &&
               legacy.tokens !== null
             )
-              tokens = rowTokens(legacy.tokens);
+              {
+                tokens = rowTokens(legacy.tokens);
+                tokensKnown = Number.isFinite(legacy.tokens) && legacy.tokens >= 0;
+              }
             if (legacy.tokenDelta !== null)
               tokenDelta = rowTokens(legacy.tokenDelta);
             if (legacy.updatedAt !== null)
               updatedAt = Math.max(updatedAt, legacy.updatedAt);
+            if (!turnHistoryById.has(id)) executionHistory = legacy.executionHistory;
           }
         } else if (historyMode === "legacy" && row.rollout_path) {
           diagnostics.warnings.push(
@@ -855,13 +997,18 @@ export class LocalReader {
           completedAt: latestTurn?.completedAt ?? null,
           updatedAt,
           tokens,
+          tokensKnown,
           activityEvidence: activityEvidence({
             source: activitySource,
             latestTurn,
             stale: activity.stale,
             eventCount,
           }),
+          executionHistory,
         };
+        if (executionHistory.coverage === "partial") {
+          diagnostics.executionHistoryPartialThreads += 1;
+        }
         if (tokenDelta !== null) thread.tokenDelta = tokenDelta;
         output.push(thread);
       }

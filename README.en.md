@@ -51,9 +51,13 @@ Three decimal places are a display format only. They do not imply that the under
 
 ## Sessions and model overview
 
-Root sessions and child sessions keep their first-observed order. New entries append at the end; status, usage, and update-time changes do not reorder them. The order is saved with the local monitoring state and survives service restarts.
+Running sessions come first. Both the running and non-running groups retain their saved internal order; usage and update-time changes do not reshuffle them. A session that becomes idle moves below the remaining running sessions. Child sessions follow the same rule, and the underlying order survives service restarts.
 
-The right-edge table of contents expands on hover or keyboard focus. Search sessions by title keywords or exact IDs. The list starts with five root sessions per page, supports expanding five more at a time, and keeps child sessions collapsible. Search and expansion survive refreshes. Session totals preserve observed allocations across quota resets; unobserved history cannot be recovered. Completed tasks use measured average rates when timing evidence exists.
+The right-edge table of contents expands on hover or keyboard focus. Search sessions by title keywords or exact IDs. The list starts with five root sessions per page, supports expanding five more at a time, and keeps child sessions collapsible. Search and expansion survive refreshes.
+
+Each task has two metric lines: total execution time, monitored quota estimate and measured average time per 1%; then its own latest turn's duration, separately observed quota estimate and current prediction. Parent totals include discovered children, with overlapping execution intervals counted once. Execution time uses retained local records, capped at the latest 5000 turns per thread; incomplete and legacy records remain partial.
+
+Quota totals and average rates only cover monitored samples, so the average is not calculated by dividing all historical duration by a partially observed quota total. Latest-turn quota is tracked separately and never copied from a task's lifetime allocation. Ambiguous deltas at a turn boundary do not enter the new turn. Earlier versions cannot backfill per-turn quota; missing evidence displays `—`, not zero. Idle tasks and tasks without recent samples do not promise a future rate.
 
 The model overview shows one model per page, with a selector and previous/next controls. Desktop cards use three rows: `ultra / max`, `xhigh / high`, and `medium / low`. Shared source notes appear above the cards. Local observations take priority; dated Codex Radar DeepSWE cost/hour ratios are only used with a comparable local calibration sample. API costs do not equal subscription percentages, and Spark's separate quota pool does not borrow calibration from the main Codex pool.
 

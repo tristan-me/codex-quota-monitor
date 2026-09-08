@@ -1,0 +1,202 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { Estimator } from "../server/metrics.mjs";
+import { Collector } from "../server/collector.mjs";
+
+const start = 1_800_000_000_000;
+const ms = (seconds) => start + seconds * 1000;
+const task = (turn, tokens, seconds = 0, extra = {}) => ({
+  id: "task", title: "Task", model: "gpt-5.6-terra", status: "active",
+  startedAt: ms(seconds), tokens,
+  activityEvidence: { turnId: turn }, ...extra,
+});
+const quota = (used = 10, reset = ms(1000)) => ({
+  id: "codex:primary", bucket: "codex", windowMinutes: 10080,
+  usedPercent: used, remainingPercent: 100 - used, resetsAt: reset,
+});
+function baseline(row = task("a", 0)) {
+  const e = new Estimator();
+  e.local([row], ms(0)); e.quota(quota(), ms(0), "account");
+  return e;
+}
+const view = (e, row, seconds) => e.sessions([row], ms(seconds))[0];
+
+test("delayed quota ticks keep prior-turn tokens out of the latest turn", () => {
+  const e = baseline();
+  e.local([task("a", 100)], ms(5));
+  e.quota(quota(), ms(5), "account");
+  e.local([task("b", 100, 10)], ms(10));
+  assert.equal(view(e, task("b", 100, 10), 10).latestTurnEstimatedPercent, null);
+  e.local([task("b", 150, 10)], ms(15));
+  e.quota(quota(11), ms(15), "account");
+  const row = view(e, task("b", 150, 10), 15);
+  assert.equal(row.totalEstimatedPercent, 1);
+  assert.ok(Math.abs(row.latestTurnEstimatedPercent - 1 / 3) < 1e-12);
+});
+
+test("a token jump spanning the turn boundary is not attributed to the new turn", () => {
+  const e = baseline();
+  e.local([task("a", 100)], ms(5));
+  e.local([task("b", 160, 6)], ms(10));
+  e.local([task("b", 200, 6)], ms(15));
+  e.quota(quota(11), ms(15), "account");
+  const row = view(e, task("b", 200, 6), 15);
+  assert.equal(row.totalEstimatedPercent, 1);
+  assert.ok(Math.abs(row.latestTurnEstimatedPercent - .2) < 1e-12);
+});
+
+test("quota reset discards old pending tokens without erasing confirmed current-turn usage", () => {
+  const e = baseline();
+  e.local([task("a", 100)], ms(5)); e.quota(quota(11), ms(5), "account");
+  e.local([task("a", 200)], ms(10));
+  e.quota(quota(0, ms(2000)), ms(10), "account");
+  e.local([task("b", 200, 15)], ms(15));
+  e.local([task("b", 250, 15)], ms(20));
+  e.quota(quota(1, ms(2000)), ms(20), "account");
+  const row = view(e, task("b", 250, 15), 20);
+  assert.equal(row.totalEstimatedPercent, 2);
+  assert.equal(row.latestTurnEstimatedPercent, 1);
+});
+
+test("restart preserves confirmed turn usage and drops unconfirmed offline deltas", () => {
+  const e = baseline();
+  e.local([task("a", 100)], ms(5)); e.quota(quota(11), ms(5), "account");
+  e.local([task("a", 150)], ms(10));
+  const restored = new Estimator(JSON.parse(JSON.stringify(e.state)));
+  restored.local([task("a", 600)], ms(100));
+  restored.quota(quota(13), ms(100), "account");
+  const row = view(restored, task("a", 600), 100);
+  assert.equal(row.latestTurnEstimatedPercent, 1);
+  assert.equal(row.totalEstimatedPercent, 1);
+  assert.equal(restored.state.unattributedPercent, 2);
+  assert.equal(row.latestTurnCoverage, "partial-after-restart");
+  assert.equal(row.latestTurnLastAttachedAt, ms(100));
+});
+
+test("missing and unknown observations cannot inflate latest-turn allocation", () => {
+  const e = baseline();
+  e.local([], ms(5));
+  e.local([task("a", 100)], ms(10));
+  e.local([task("a", 200, 0, { status: "unknown" })], ms(15));
+  e.local([task("a", 300)], ms(20));
+  e.quota(quota(11), ms(20), "account");
+  assert.equal(view(e, task("a", 300), 20).latestTurnEstimatedPercent, null);
+  e.local([task("a", 350)], ms(25));
+  e.quota(quota(12), ms(25), "account");
+  assert.equal(view(e, task("a", 350), 25).latestTurnEstimatedPercent, 1);
+});
+
+test("unknown token values are baselines, not zero-consumption evidence", () => {
+  const e = baseline(task("a", 0, 0, { tokensKnown: false }));
+  e.local([task("a", 1000)], ms(5));
+  e.quota(quota(11), ms(5), "account");
+  assert.equal(view(e, task("a", 1000), 5).latestTurnEstimatedPercent, null);
+  assert.equal(e.state.unattributedPercent, 1);
+});
+
+test("root totals include children once but latest turn belongs to the root itself", () => {
+  const e = new Estimator();
+  const root = (tokens) => task("root-turn", tokens, 0, {
+    executionHistory: { intervals: [[ms(-100), ms(-50)]], coverage: "local-records" },
+  });
+  const child = (tokens) => ({ ...task("child-turn", tokens), id: "child", parentThreadId: "task",
+    executionHistory: { intervals: [[ms(-90), ms(-60)]], coverage: "local-records" } });
+  e.local([root(0), child(0)], ms(0)); e.quota(quota(), ms(0), "account");
+  e.local([root(100), child(100)], ms(30)); e.quota(quota(11), ms(30), "account");
+  const row = e.sessions([root(100), child(100)], ms(30))[0];
+  assert.equal(row.totalEstimatedPercent, 1);
+  assert.equal(row.latestTurnEstimatedPercent, .5);
+  assert.equal(row.children[0].latestTurnEstimatedPercent, .5);
+  assert.equal(row.totalElapsedSeconds, 80);
+  assert.equal(row.latestTurnElapsedSeconds, 30);
+  assert.equal(row.children[0].totalElapsedSeconds, 60);
+});
+
+test("completed latest duration uses explicit execution duration and makes no idle forecast", () => {
+  const row = task("a", 10, 0, { status: "idle", completedAt: ms(50),
+    activityEvidence: { turnId: "a", lastTurnDurationMs: 49_750 } });
+  const e = baseline(row);
+  const result = view(e, row, 100);
+  assert.equal(result.latestTurnElapsedSeconds, 49.75);
+  assert.equal(result.latestTurnSecondsPerPercent, null);
+});
+
+test("advancing a projection ordinal does not start another turn", () => {
+  const e = baseline(task("a", 0, 0, { activityEvidence: { turnId: "a", turnSequence: 1 } }));
+  e.local([task("a", 100, 0, { activityEvidence: { turnId: "a", turnSequence: 20 } })], ms(30));
+  e.quota(quota(11), ms(30), "account");
+  assert.equal(view(e, task("a", 100), 30).latestTurnEstimatedPercent, 1);
+});
+
+test("running groups move ahead while each status group keeps its saved rank", () => {
+  const e = new Estimator();
+  const a = { ...task("a", 0), id: "a" };
+  const b = { ...task("b", 0), id: "b" };
+  const c = { ...task("c", 0), id: "c" };
+  assert.deepEqual(e.sessions([a, b, c], ms(0)).map(x => x.id), ["a", "b", "c"]);
+  const idleA = { ...a, status: "idle", completedAt: ms(5) };
+  assert.deepEqual(e.sessions([c, idleA, b], ms(5)).map(x => x.id), ["b", "c", "a"]);
+  assert.deepEqual(e.sessions([{ ...b, status: "idle" }, c, idleA], ms(6)).map(x => x.id), ["c", "a", "b"]);
+});
+
+test("regressed and unknown projections do not claim an old duration as the latest turn", () => {
+  const e = baseline();
+  e.local([task("b", 100, 10)], ms(15));
+  e.local([task("b", 150, 10)], ms(20));
+  e.quota(quota(11), ms(20), "account");
+  e.local([task("a", 150)], ms(25));
+  const regressed = view(e, task("a", 150), 25);
+  assert.equal(regressed.latestTurnElapsedSeconds, null);
+  assert.equal(regressed.latestTurnEstimatedPercent, null);
+  const uncertain = task("b", 150, 10, { status: "unknown", completedAt: ms(30),
+    activityEvidence: { turnId: "b", lastTurnDurationMs: 20_000 } });
+  assert.equal(view(e, uncertain, 30).latestTurnElapsedSeconds, null);
+  e.local([task("b", 150, 10)], ms(35));
+  assert.equal(view(e, task("b", 150, 10), 35).latestTurnEstimatedPercent, 1 / 3);
+});
+
+test("a restored terminal projection becoming active does not erase confirmed allocations", () => {
+  const e = baseline();
+  e.local([task("a", 100)], ms(5)); e.quota(quota(11), ms(5), "account");
+  e.local([task("a", 100, 0, { status: "idle", completedAt: ms(6) })], ms(7));
+  const restored = new Estimator(JSON.parse(JSON.stringify(e.state)));
+  restored.local([task("a", 100)], ms(10));
+  assert.equal(view(restored, task("a", 100), 10).latestTurnEstimatedPercent, 1);
+});
+
+test("remaining active children move ahead without changing their saved relative order", () => {
+  const e = new Estimator();
+  const root = task("root", 0, 0, { status: "idle", completedAt: ms(1) });
+  const first = { ...task("first", 0), id: "first", parentThreadId: "task" };
+  const second = { ...task("second", 0), id: "second", parentThreadId: "task" };
+  e.sessions([root, first, second], ms(2));
+  const result = e.sessions([{ ...first, status: "idle" }, root, second], ms(3))[0];
+  assert.equal(result.status, "active");
+  assert.deepEqual(result.children.map(row => row.id), ["second", "first"]);
+});
+
+test("paused or stale account snapshots suppress latest-turn forecasts for roots and children", () => {
+  const at = Date.now() - 60000;
+  const rows = (tokens) => [
+    task("root", tokens, 0, { startedAt: at }),
+    { ...task("child", tokens, 0, { startedAt: at }), id: "child", parentThreadId: "task" },
+  ];
+  const e = new Estimator();
+  e.local(rows(0), at); e.quota(quota(), at, "account");
+  e.local(rows(100), at + 30000); e.quota(quota(11), at + 30000, "account");
+  e.local(rows(200), at + 59000);
+  const c = new Collector({ dataDir: ".", reader: {}, client: {}, resetFetcher: null });
+  c.estimator = e; c.threads = rows(200);
+  c.account.lastFetchedAt = Date.now();
+  const fresh = c.snapshot().sessions[0];
+  assert.ok(fresh.latestTurnSecondsPerPercent > 0);
+  assert.ok(fresh.children[0].latestTurnSecondsPerPercent > 0);
+  c.settings.paused = true;
+  const paused = c.snapshot().sessions[0];
+  assert.equal(paused.latestTurnSecondsPerPercent, null);
+  assert.equal(paused.children[0].latestTurnSecondsPerPercent, null);
+  c.settings.paused = false; c.account.error = "offline";
+  const stale = c.snapshot().sessions[0];
+  assert.equal(stale.latestTurnSecondsPerPercent, null);
+  assert.equal(stale.children[0].latestTurnSecondsPerPercent, null);
+});

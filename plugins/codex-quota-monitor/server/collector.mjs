@@ -546,9 +546,11 @@ export class Collector {
           ? {
               secondsPerPercent: null,
               ownSecondsPerPercent: null,
+              latestTurnSecondsPerPercent: null,
               children: (session.children || []).map((child) => ({
                 ...child,
                 secondsPerPercent: null,
+                latestTurnSecondsPerPercent: null,
               })),
             }
           : {}),

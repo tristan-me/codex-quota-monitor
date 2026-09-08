@@ -564,6 +564,22 @@
     return finiteNumber(session.estimatedPercent);
   }
 
+  function sessionMetric(session, currentKey, fallbackKey, estimate = false) {
+    if (Object.prototype.hasOwnProperty.call(session, currentKey)) return finiteNumber(session[currentKey]);
+    return estimate ? sessionEstimatedPercent(session) : finiteNumber(session[fallbackKey]);
+  }
+
+  function sessionTotals(session) {
+    return {
+      totalElapsedSeconds: sessionMetric(session, 'totalElapsedSeconds', 'observationSeconds'),
+      totalEstimatedPercent: sessionMetric(session, 'totalEstimatedPercent', 'estimatedPercent', true),
+      averageSecondsPerPercent: sessionMetric(session, 'averageSecondsPerPercent', 'averageSecondsPerPercent'),
+      latestTurnElapsedSeconds: sessionMetric(session, 'latestTurnElapsedSeconds', 'elapsedSeconds'),
+      latestTurnEstimatedPercent: finiteNumber(session.latestTurnEstimatedPercent),
+      secondsPerPercent: sessionMetric(session, 'latestTurnSecondsPerPercent', 'secondsPerPercent'),
+    };
+  }
+
   function sessionFilterEntries(sessions, tokens) {
     return sessions.map((root) => {
       const children = Array.isArray(root.children) ? root.children.filter((child) => isRecord(child)) : [];
@@ -661,24 +677,13 @@
       }
       row.append(meta);
 
-      const elapsed = finiteNumber(session.elapsedSeconds);
-      const estimate = sessionEstimatedPercent(session);
-      const active = isCurrentlyRunning(session.status);
-      const activeSpeed = finiteNumber(session.secondsPerPercent);
-      const averageSpeed = finiteNumber(session.averageSecondsPerPercent);
-      const speed = active ? activeSpeed : averageSpeed;
-      const speedLabel = isFinishedStatus(session.status) ? '每下降 1% 平均耗时' : '每下降 1% 预计耗时';
-      const statLine = document.createElement('p');
+      const metrics = sessionTotals(session);
+      const statLine = document.createElement('div');
       statLine.className = 'session-stat-line';
-      const statParts = [
-        `已处理 ${elapsed === null ? '—' : formatDuration(elapsed)}`,
-        `已消耗估算 ${estimate === null ? '—' : formatPercent(estimate)}`,
-        `${speedLabel} ${speed === null || speed <= 0 ? '—' : formatDuration(speed, '—')}`,
-      ];
-      const observation = finiteNumber(session.observationSeconds);
-      const statuses = [];
-      statLine.textContent = statParts.join(' · ');
-      statLine.title = [observation === null ? '' : `观测 ${formatDuration(observation)}`, ...statuses].filter(Boolean).join(' · ');
+      const totalLine = `任务总计耗时${formatDuration(metrics.totalElapsedSeconds)}，任务总计消耗估算${formatPercent(metrics.totalEstimatedPercent)}，平均每 1% 额度能撑 ${formatDuration(metrics.averageSecondsPerPercent)}；`;
+      const latestLine = `最近一次会话耗时${formatDuration(metrics.latestTurnElapsedSeconds)}，最近一次会话消耗估算${formatPercent(metrics.latestTurnEstimatedPercent)}，预计接下来每 1% 额度能撑 ${formatDuration(metrics.secondsPerPercent)}`;
+      statLine.append(textElement('span', 'session-stat-line-block', totalLine));
+      statLine.append(textElement('span', 'session-stat-line-block', latestLine));
       row.append(statLine);
 
       const children = Array.isArray(session.children) ? session.children.filter((child) => isRecord(child)) : [];
@@ -740,18 +745,11 @@
             childMeta.append(textElement('span', 'meta-separator', '·'));
             childMeta.append(textElement('span', 'meta-item', safeText(child.reasoningEffort, '—')));
             childRow.append(childMeta);
-            const childElapsed = finiteNumber(child.elapsedSeconds);
-            const childEstimate = sessionEstimatedPercent(child);
-            const childActive = isCurrentlyRunning(child.status);
-            const childRate = finiteNumber(childActive ? child.secondsPerPercent : child.averageSecondsPerPercent);
-            const childLine = document.createElement('p');
+            const childMetrics = sessionTotals(child);
+            const childLine = document.createElement('div');
             childLine.className = 'session-stat-line';
-            childLine.textContent = [
-              `已处理 ${childElapsed === null ? '—' : formatDuration(childElapsed)}`,
-              `已消耗估算 ${childEstimate === null ? '—' : formatPercent(childEstimate)}`,
-              `${isFinishedStatus(child.status) ? '每下降 1% 平均耗时' : '每下降 1% 预计耗时'} ${childRate === null || childRate <= 0 ? '—' : formatDuration(childRate, '—')}`,
-            ].join(' · ');
-            childLine.title = finiteNumber(child.observationSeconds) > 0 ? `已观测活跃时长 ${formatDuration(child.observationSeconds)}` : '尚无可用的观测计时';
+            childLine.append(textElement('span', 'session-stat-line-block', `任务总计耗时${formatDuration(childMetrics.totalElapsedSeconds)}，任务总计消耗估算${formatPercent(childMetrics.totalEstimatedPercent)}，平均每 1% 额度能撑 ${formatDuration(childMetrics.averageSecondsPerPercent)}；`));
+            childLine.append(textElement('span', 'session-stat-line-block', `最近一次会话耗时${formatDuration(childMetrics.latestTurnElapsedSeconds)}，最近一次会话消耗估算${formatPercent(childMetrics.latestTurnEstimatedPercent)}，预计接下来每 1% 额度能撑 ${formatDuration(childMetrics.secondsPerPercent)}`));
             childRow.append(childLine);
             childList.append(childRow);
           });

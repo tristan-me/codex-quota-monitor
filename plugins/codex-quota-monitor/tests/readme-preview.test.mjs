@@ -43,15 +43,36 @@ test("preview sessions have safe demo IDs, expandable children, and rate fields"
     assert.equal(typeof root.elapsedSeconds, "number");
     assert.equal(typeof root.tokens, "number");
     assert.equal(typeof root.observationSeconds, "number");
+    assert.equal(typeof root.totalElapsedSeconds, "number");
+    assert.equal(typeof root.totalEstimatedPercent, "number");
+    assert.equal(typeof root.latestTurnElapsedSeconds, "number");
+    assert.equal(typeof root.latestTurnEstimatedPercent, "number");
+    assert.ok(root.latestTurnSecondsPerPercent === null || typeof root.latestTurnSecondsPerPercent === "number");
+    assert.ok(root.secondsPerPercent === null || typeof root.secondsPerPercent === "number");
+    assert.ok(root.latestTurnElapsedSeconds <= root.totalElapsedSeconds);
+    assert.ok(root.latestTurnEstimatedPercent <= root.totalEstimatedPercent);
     for (const child of root.children) {
       assert.match(child.id, /^demo-[a-z0-9-]+$/);
       assert.equal(child.parentThreadId, root.id);
       assert.equal(typeof child.tokens, "number");
       assert.equal(typeof child.elapsedSeconds, "number");
       assert.equal(typeof child.observationSeconds, "number");
+      assert.equal(typeof child.totalElapsedSeconds, "number");
+      assert.equal(typeof child.totalEstimatedPercent, "number");
+      assert.equal(typeof child.latestTurnElapsedSeconds, "number");
+      assert.equal(typeof child.latestTurnEstimatedPercent, "number");
+      assert.ok(child.latestTurnSecondsPerPercent === null || typeof child.latestTurnSecondsPerPercent === "number");
       assert.ok(child.averageSecondsPerPercent === null || child.averageSecondsPerPercent > 0);
     }
   }
+  const interfaceRoot = snapshot.sessions.find((session) => session.id === "demo-interface-refactor");
+  const interfaceTests = interfaceRoot.children.find((child) => child.id === "demo-interface-tests");
+  assert.equal(interfaceRoot.totalElapsedSeconds, 55 * 60);
+  assert.equal(interfaceTests.totalElapsedSeconds, 41 * 60);
+  assert.equal(interfaceRoot.observationSeconds, 1224);
+  assert.ok(Math.abs(interfaceRoot.averageSecondsPerPercent * interfaceRoot.totalEstimatedPercent - 1224) < 1e-8);
+  assert.ok(interfaceTests.latestTurnElapsedSeconds <= interfaceTests.totalElapsedSeconds);
+  assert.ok(interfaceTests.latestTurnEstimatedPercent <= interfaceTests.totalEstimatedPercent);
   const serialized = JSON.stringify(snapshot);
   assert.doesNotMatch(serialized, /\/Users\/|\/home\/|CODEX_HOME/);
   assert.doesNotMatch(serialized, /[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/i);

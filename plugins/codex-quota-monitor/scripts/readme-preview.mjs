@@ -223,13 +223,48 @@ function readmeSessions(now) {
     return {...item, estimatedPercent:amount, averageSecondsPerPercent:hourlyRate>0?3600/hourlyRate:null,
       secondsPerPercent:item.status==='active'&&hourlyRate>0?3600/hourlyRate:null};
   };
+  const historyInterval = [now - 75 * MINUTE_MS, now - 45 * MINUTE_MS];
+  const latestInterval = item => [item.startedAt, item.completedAt || now];
+  const observedIntervals = item => {
+    // The sample's observed work is split 60% in the prior turn and 40%
+    // in the latest turn, matching the quota split displayed below.
+    const recentEnd = latestInterval(item)[1];
+    return [
+      [historyInterval[1] - item.observationSeconds * .6 * 1000, historyInterval[1]],
+      [recentEnd - item.observationSeconds * .4 * 1000, recentEnd],
+    ];
+  };
+  const unionSeconds = intervals => {
+    const ordered = intervals.filter(([start, end]) => Number.isFinite(start) && Number.isFinite(end) && end > start).sort((a,b) => a[0] - b[0]);
+    let total = 0;
+    let end = -Infinity;
+    for (const [start, finish] of ordered) {
+      total += Math.max(0, finish - Math.max(start, end)) / 1000;
+      end = Math.max(end, finish);
+    }
+    return total;
+  };
+  const enrichOwn = (item, latestEstimate) => ({...item,
+    totalElapsedSeconds: unionSeconds([historyInterval, latestInterval(item)]),
+    totalEstimatedPercent: item.estimatedPercent,
+    latestTurnElapsedSeconds: Math.max(0, (latestInterval(item)[1] - latestInterval(item)[0]) / 1000),
+    latestTurnEstimatedPercent: latestEstimate,
+    latestTurnSecondsPerPercent: item.secondsPerPercent,
+  });
   return [rootInterface, rootTests, rootDocs, rootRelease].map(root=>{
     const own=ownMetrics(root), children=root.children.map(ownMetrics);
     const total=own.estimatedPercent+children.reduce((sum,item)=>sum+item.estimatedPercent,0);
+    const totalElapsedSeconds=unionSeconds([historyInterval, ...[root, ...root.children].map(latestInterval)]);
+    const observedGroupSeconds=unionSeconds([own,...children].flatMap(observedIntervals));
     const activeRate=[own,...children].reduce((sum,item)=>sum+(item.secondsPerPercent?1/item.secondsPerPercent:0),0);
-    return {...own,children,childCount:children.length,estimatedPercent:total,
+    const ownWithTotals=enrichOwn(own, own.estimatedPercent === null ? null : own.estimatedPercent * 0.4);
+    const childrenWithTotals=children.map(item=>enrichOwn(item, item.estimatedPercent === null ? null : item.estimatedPercent * 0.4));
+    return {...ownWithTotals,children:childrenWithTotals,childCount:childrenWithTotals.length,estimatedPercent:total,
+      totalElapsedSeconds,totalEstimatedPercent:total,
+      observationSeconds:observedGroupSeconds,
       secondsPerPercent:root.status==='active'&&activeRate>0?1/activeRate:null,
-      averageSecondsPerPercent:total>0?root.observationSeconds/total:null,
+      latestTurnSecondsPerPercent:own.secondsPerPercent,
+      averageSecondsPerPercent:total>0?observedGroupSeconds/total:null,
       ownStatus:own.status,ownEstimatedPercent:own.estimatedPercent,
       ownSecondsPerPercent:own.secondsPerPercent,ownAverageSecondsPerPercent:own.averageSecondsPerPercent,
       ownObservationSeconds:own.observationSeconds,observationSince:now-75*MINUTE_MS};

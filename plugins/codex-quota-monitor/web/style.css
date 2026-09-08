@@ -980,6 +980,12 @@ button:disabled {
   font-size: 12px;
   font-variant-numeric: tabular-nums;
   line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+
+.session-stat-line-block {
+  display: block;
+  min-width: 0;
 }
 
 .session-notes {

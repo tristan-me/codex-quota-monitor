@@ -268,6 +268,199 @@ test("joins selected SQLite metadata with latest turns, parses parent edges, fil
   );
 });
 
+test("preserves latest turn identity and bounded completed execution intervals", async (t) => {
+  const home = await makeHome();
+  t.after(() => fs.rm(home, { recursive: true, force: true }));
+  const now = 1_800_000_000_000;
+  const seconds = Math.floor(now / 1000);
+  makeStateDb(home, [
+    {
+      id: "multi-turn",
+      title: "Multi turn",
+      model: "gpt-5.6-sol",
+      reasoning_effort: "medium",
+      source: "vscode",
+      tokens_used: 100,
+      updated_at_ms: now - 1000,
+    },
+    {
+      id: "completed-turn",
+      title: "Completed turn",
+      model: "gpt-5.6-sol",
+      reasoning_effort: "low",
+      source: "vscode",
+      tokens_used: 200,
+      updated_at_ms: now - 2000,
+    },
+  ]);
+  makeHistoryDb(home, [
+    {
+      thread_id: "multi-turn",
+      turn_id: "turn-one",
+      rollout_ordinal: 1,
+      status: "completed",
+      started_at: seconds - 1000,
+      completed_at: seconds - 900,
+      duration_ms: 100_000,
+    },
+    {
+      thread_id: "multi-turn",
+      turn_id: "turn-two",
+      rollout_ordinal: 2,
+      status: "completed",
+      started_at: seconds - 950,
+      completed_at: seconds - 850,
+    },
+    {
+      thread_id: "multi-turn",
+      turn_id: "turn-three",
+      rollout_ordinal: 3,
+      status: "inProgress",
+      started_at: seconds - 30,
+    },
+    {
+      thread_id: "multi-turn",
+      turn_id: "turn-missing",
+      rollout_ordinal: 0,
+      status: "completed",
+    },
+    {
+      thread_id: "multi-turn",
+      turn_id: "turn-unknown",
+      rollout_ordinal: -1,
+      status: "mystery",
+      started_at: seconds - 500,
+      completed_at: seconds - 490,
+    },
+    {
+      thread_id: "multi-turn",
+      turn_id: "turn-zero-duration",
+      rollout_ordinal: -2,
+      status: "completed",
+      started_at: seconds - 400,
+      completed_at: seconds - 390,
+      duration_ms: 0,
+    },
+    {
+      thread_id: "completed-turn",
+      turn_id: "completed-only",
+      rollout_ordinal: 1,
+      status: "completed",
+      completed_at: seconds - 40,
+      duration_ms: 30_000,
+    },
+  ]);
+
+  const result = new LocalReader({ codexHome: home, now }).read();
+  const multi = findThread(result, "multi-turn");
+  assert.equal(multi.activityEvidence.turnId, "turn-three");
+  assert.equal(multi.activityEvidence.turnSequence, 3);
+  assert.equal(multi.activityEvidence.lastTurnDurationMs, null);
+  assert.equal(multi.executionHistory.source, "thread_history");
+  assert.equal(multi.executionHistory.coverage, "partial");
+  assert.deepEqual(multi.executionHistory.intervals, [
+    [(seconds - 1000) * 1000, (seconds - 900) * 1000],
+    [(seconds - 950) * 1000, (seconds - 850) * 1000],
+    [(seconds - 400) * 1000, (seconds - 390) * 1000],
+  ]);
+
+  const completed = findThread(result, "completed-turn");
+  assert.equal(completed.activityEvidence.turnId, "completed-only");
+  assert.equal(completed.activityEvidence.turnSequence, 1);
+  assert.equal(completed.activityEvidence.lastTurnDurationMs, 30_000);
+  assert.deepEqual(completed.executionHistory.intervals, [
+    [(seconds - 70) * 1000, (seconds - 40) * 1000],
+  ]);
+  assert.equal(completed.executionHistory.coverage, "partial");
+});
+
+test("same rollout ordinal prefers the newest row and does not let an older active row win", async (t) => {
+  const home = await makeHome();
+  t.after(() => fs.rm(home, { recursive: true, force: true }));
+  const now = 1_800_000_000_000;
+  const seconds = Math.floor(now / 1000);
+  makeStateDb(home, [{
+    id: "same-ordinal",
+    title: "Same ordinal",
+    model: "gpt-5.6-sol",
+    reasoning_effort: "medium",
+    source: "vscode",
+    tokens_used: 10,
+    updated_at_ms: now - 1000,
+  }]);
+  makeHistoryDb(home, [
+    {
+      thread_id: "same-ordinal",
+      turn_id: "older-active",
+      rollout_ordinal: 7,
+      status: "inProgress",
+      started_at: seconds - 900,
+    },
+    {
+      thread_id: "same-ordinal",
+      turn_id: "newer-completed",
+      rollout_ordinal: 7,
+      status: "completed",
+      started_at: seconds - 30,
+      completed_at: seconds - 10,
+      duration_ms: 20_000,
+    },
+  ]);
+
+  const result = new LocalReader({ codexHome: home, now }).read();
+  const thread = findThread(result, "same-ordinal");
+  assert.equal(thread.status, "idle");
+  assert.equal(thread.activityEvidence.turnId, "newer-completed");
+  assert.equal(thread.activityEvidence.turnSequence, 7);
+  assert.equal(thread.activityEvidence.lastTurnDurationMs, 20_000);
+});
+
+test("derives intervals when optional duration_ms is absent from the history schema", async (t) => {
+  const home = await makeHome();
+  t.after(() => fs.rm(home, { recursive: true, force: true }));
+  const now = 1_800_000_000_000;
+  const seconds = Math.floor(now / 1000);
+  makeStateDb(home, [{
+    id: "old-schema",
+    title: "Old schema",
+    model: "gpt-5.6-sol",
+    reasoning_effort: "medium",
+    source: "cli",
+    tokens_used: 10,
+    updated_at_ms: now - 1000,
+  }]);
+  const historyPath = path.join(home, "thread_history_1.sqlite");
+  const db = new DatabaseSync(historyPath);
+  db.exec(`CREATE TABLE thread_turns (
+    thread_id TEXT,
+    turn_id TEXT,
+    rollout_ordinal INTEGER,
+    status TEXT,
+    started_at INTEGER,
+    completed_at INTEGER
+  )`);
+  db.prepare(`INSERT INTO thread_turns
+    (thread_id,turn_id,rollout_ordinal,status,started_at,completed_at)
+    VALUES (?,?,?,?,?,?)`).run(
+    "old-schema",
+    "old-turn",
+    2,
+    "completed",
+    seconds - 20,
+    seconds - 10,
+  );
+  db.close();
+
+  const result = new LocalReader({ codexHome: home, now }).read();
+  const thread = findThread(result, "old-schema");
+  assert.equal(thread.activityEvidence.turnSequence, 2);
+  assert.equal(thread.activityEvidence.lastTurnDurationMs, 10_000);
+  assert.deepEqual(thread.executionHistory.intervals, [
+    [(seconds - 20) * 1000, (seconds - 10) * 1000],
+  ]);
+  assert.equal(thread.executionHistory.coverage, "local-records");
+});
+
 test("uses bounded legacy rollout parsing for lifecycle and token_count evidence without exposing content", async (t) => {
   const home = await makeHome();
   t.after(() => fs.rm(home, { recursive: true, force: true }));
@@ -308,6 +501,7 @@ test("uses bounded legacy rollout parsing for lifecycle and token_count evidence
           turn_id: "legacy-turn",
           started_at: nowSeconds - 20,
           completed_at: nowSeconds - 1,
+          duration_ms: 19_000,
           last_agent_message: "PRIVATE SHOULD NOT ESCAPE",
         },
       }),
@@ -337,6 +531,29 @@ test("uses bounded legacy rollout parsing for lifecycle and token_count evidence
         turn_id: "stale-turn",
         started_at: nowSeconds - 8 * 24 * 60 * 60,
       },
+    }) + "\n",
+  );
+  const orphanPath = path.join(rolloutDir, "orphan.jsonl");
+  await fs.writeFile(
+    orphanPath,
+    JSON.stringify({
+      type: "event_msg",
+      timestamp: new Date(now - 8_000).toISOString(),
+      payload: {
+        type: "task_complete",
+        turn_id: "orphan-turn",
+        completed_at: nowSeconds - 8,
+        duration_ms: 7_000,
+      },
+    }) + "\n",
+  );
+  const orphanMissingPath = path.join(rolloutDir, "orphan-missing.jsonl");
+  await fs.writeFile(
+    orphanMissingPath,
+    JSON.stringify({
+      type: "event_msg",
+      timestamp: new Date(now - 6_000).toISOString(),
+      payload: { type: "task_complete", turn_id: "orphan-missing" },
     }) + "\n",
   );
   makeStateDb(home, [
@@ -373,6 +590,28 @@ test("uses bounded legacy rollout parsing for lifecycle and token_count evidence
       rollout_path: stalePath,
       history_mode: "legacy",
     },
+    {
+      id: "legacy-orphan",
+      title: "Legacy orphan",
+      model: "gpt-5.6-sol",
+      reasoning_effort: "low",
+      source: "cli",
+      tokens_used: 14,
+      updated_at_ms: now - 4_000,
+      rollout_path: orphanPath,
+      history_mode: "legacy",
+    },
+    {
+      id: "legacy-orphan-missing",
+      title: "Legacy orphan missing",
+      model: "gpt-5.6-sol",
+      reasoning_effort: "low",
+      source: "cli",
+      tokens_used: 15,
+      updated_at_ms: now - 5_000,
+      rollout_path: orphanMissingPath,
+      history_mode: "legacy",
+    },
   ]);
   makeHistoryDb(home, []);
 
@@ -383,10 +622,29 @@ test("uses bounded legacy rollout parsing for lifecycle and token_count evidence
   assert.equal(complete.tokenDelta, 44);
   assert.equal(complete.startedAt, (nowSeconds - 20) * 1000);
   assert.equal(complete.completedAt, (nowSeconds - 1) * 1000);
+  assert.equal(complete.activityEvidence.lastTurnDurationMs, 19_000);
+  assert.equal(complete.activityEvidence.turnSequence, null);
+  assert.equal(complete.executionHistory.source, "legacy_tail");
+  assert.equal(complete.executionHistory.coverage, "partial");
+  assert.deepEqual(complete.executionHistory.intervals, [
+    [(nowSeconds - 20) * 1000, (nowSeconds - 1) * 1000],
+  ]);
   assert.equal(complete.activityEvidence.source, "rollout_jsonl");
+  const orphan = findThread(result, "legacy-orphan");
+  assert.equal(orphan.startedAt, (nowSeconds - 15) * 1000);
+  assert.equal(orphan.completedAt, (nowSeconds - 8) * 1000);
+  assert.equal(orphan.activityEvidence.lastTurnDurationMs, 7_000);
+  assert.deepEqual(orphan.executionHistory.intervals, [
+    [(nowSeconds - 15) * 1000, (nowSeconds - 8) * 1000],
+  ]);
+  const orphanMissing = findThread(result, "legacy-orphan-missing");
+  assert.equal(orphanMissing.startedAt, null);
+  assert.equal(orphanMissing.completedAt, (nowSeconds - 6) * 1000);
+  assert.equal(orphanMissing.activityEvidence.lastTurnDurationMs, null);
+  assert.deepEqual(orphanMissing.executionHistory.intervals, []);
   assert.equal(findThread(result, "legacy-active").status, "active");
   assert.equal(findThread(result, "legacy-stale").status, "unknown");
-  assert.equal(result.diagnostics.legacyRolloutsRead, 3);
+  assert.equal(result.diagnostics.legacyRolloutsRead, 5);
   assert.equal(result.diagnostics.malformedRolloutLines, 1);
   assert.equal(
     JSON.stringify(result).includes("PRIVATE SHOULD NOT ESCAPE"),
@@ -430,6 +688,39 @@ test("caps the recent page at 200 while adding all recent active turns", async (
   );
   assert.equal(findThread(result, "thread-204").status, "active");
   assert.equal(LOCAL_READER_CONSTANTS.RECENT_THREAD_LIMIT, 200);
+});
+
+test("caps per-thread execution history and reports partial coverage", async (t) => {
+  const home = await makeHome();
+  t.after(() => fs.rm(home, { recursive: true, force: true }));
+  const now = 1_800_000_000_000;
+  const seconds = Math.floor(now / 1000);
+  makeStateDb(home, [{
+    id: "long-history",
+    title: "Long history",
+    model: "gpt-5.6-sol",
+    reasoning_effort: "medium",
+    source: "vscode",
+    tokens_used: 10,
+    updated_at_ms: now - 1000,
+  }]);
+  makeHistoryDb(home, Array.from({ length: 5001 }, (_, index) => ({
+    thread_id: "long-history",
+    turn_id: `turn-${index}`,
+    rollout_ordinal: index + 1,
+    status: "completed",
+    started_at: seconds - index * 3 - 2,
+    completed_at: seconds - index * 3,
+    duration_ms: 2000,
+  })));
+
+  const result = new LocalReader({ codexHome: home, now }).read();
+  const thread = findThread(result, "long-history");
+  assert.equal(thread.executionHistory.intervals.length, 5000);
+  assert.equal(thread.executionHistory.coverage, "partial");
+  assert.equal(thread.activityEvidence.turnSequence, 5001);
+  assert.equal(result.diagnostics.executionHistoryPartialThreads, 1);
+  assert.equal(result.diagnostics.executionHistoryTurnCap, 5000);
 });
 
 test("reports missing and incompatible local databases explicitly", async (t) => {

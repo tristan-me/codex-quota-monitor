@@ -10,7 +10,8 @@ The saved loopback endpoint keeps its port/token on the same machine, so a bookm
 Keep these distinctions visible:
 - Account windows come from `account/rateLimits/read`; show their sample time and error state.
 - Session percentages use a low-confidence allocation of the account change by local token increments. Different model weights and usage on other devices are unknown. Display three decimal places without implying three-decimal accuracy.
-- Totals cover the observation period shown by `attribution.since`, not the entire lifetime of the task. Include unattributed usage when nonzero.
+- Quota totals cover monitored samples, not the entire lifetime of the task; window attribution uses `attribution.since` while task totals can retain earlier observed windows. Include unattributed usage when nonzero. Execution durations use retained local lifecycle records and can cover a longer period than quota observations.
+- Task rows distinguish `totalElapsedSeconds` / `totalEstimatedPercent` / `averageSecondsPerPercent` from `latestTurnElapsedSeconds` / `latestTurnEstimatedPercent` / `latestTurnSecondsPerPercent`. The latest turn is the task's own latest execution; child tasks have their own latest turns. Never substitute cumulative quota for a missing latest-turn estimate. Missing evidence remains `—`.
 - No calibration or recent progress means the rate is unavailable, not zero. For an unfinished task, format a known rate as “每下降 1% 预计耗时 11分57秒”; for an idle/completed task, use “每下降 1% 平均耗时 11分57秒” with its measured average.
 - Format processing and rate durations with integer hours, minutes, and seconds, for example “1时2分3秒”, “11分57秒”, or “48秒”; omit unused leading units and do not imply sub-second precision.
 - Local dashboard refreshes make no model calls; the conversation used to open or explain the monitor still consumes normal model usage.

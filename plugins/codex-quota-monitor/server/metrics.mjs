@@ -148,6 +148,50 @@ function mergeDuration(intervals) {
   return seconds;
 }
 
+function turnIdentity(thread) {
+  const evidence = thread.activityEvidence || {};
+  const turnId = typeof evidence.turnId === "string" && evidence.turnId
+    ? evidence.turnId : null;
+  const startedAt = Number.isFinite(thread.startedAt) ? thread.startedAt : null;
+  const sequence = Number.isFinite(evidence.turnSequence) ? evidence.turnSequence : null;
+  return turnId || startedAt !== null ? { turnId, startedAt, sequence } : null;
+}
+
+function sameTurn(record, identity) {
+  if (!record || !identity) return false;
+  if (record.turnId && identity.turnId) {
+    // Projection ordinals can advance while a turn is being completed.
+    return record.turnId === identity.turnId;
+  }
+  return record.startedAt !== null && record.startedAt === identity.startedAt;
+}
+
+function latestTurnDuration(thread, now) {
+  if (thread.status !== "active" && thread.status !== "idle") return null;
+  const durationMs = thread.activityEvidence?.lastTurnDurationMs;
+  if (thread.status !== "active" && Number.isFinite(durationMs) && durationMs >= 0)
+    return durationMs / 1000;
+  if (!Number.isFinite(thread.startedAt)) return null;
+  const end = thread.status === "active" ? now : thread.completedAt;
+  return Number.isFinite(end) && end >= thread.startedAt
+    ? (end - thread.startedAt) / 1000 : null;
+}
+
+function executionIntervals(thread, now, includeLatest = true) {
+  const intervals = (Array.isArray(thread.executionHistory?.intervals)
+    ? thread.executionHistory.intervals : [])
+    .filter((pair) => Array.isArray(pair) && Number.isFinite(pair[0]) && Number.isFinite(pair[1]) && pair[1] >= pair[0])
+    .map((pair) => [pair[0], pair[1]]);
+  const latestSeconds = includeLatest ? latestTurnDuration(thread, now) : null;
+  if (Number.isFinite(thread.startedAt) && latestSeconds !== null) {
+    const end = thread.status === "active" ? now
+      : Number.isFinite(thread.completedAt) ? thread.completedAt
+      : thread.startedAt + latestSeconds * 1000;
+    if (end >= thread.startedAt) intervals.push([thread.startedAt, end]);
+  }
+  return intervals;
+}
+
 export class Estimator {
   constructor(saved = {}) {
     this.state = {
@@ -164,6 +208,8 @@ export class Estimator {
       sessionLedger: {},
       groupObservationSeconds: {},
       sessionOrder: [],
+      latestTurns: {},
+      pendingTurns: {},
       sessionTrackingSince: saved.since || Date.now(),
       ...saved,
     };
@@ -173,6 +219,17 @@ export class Estimator {
     s.sessionOrder = Array.isArray(s.sessionOrder)
       ? [...new Set(s.sessionOrder.filter((id) => typeof id === "string" && id))]
       : [];
+    s.latestTurns = s.latestTurns && typeof s.latestTurns === "object" && !Array.isArray(s.latestTurns)
+      ? s.latestTurns : {};
+    for (const record of Object.values(s.latestTurns)) {
+      if (record && typeof record === "object") record.recovered = true;
+    }
+    // Unconfirmed deltas and recent rates cannot cross a collector restart.
+    s.pending = {};
+    s.pendingTurns = {};
+    s.lastTokens = {};
+    s.activity = {};
+    s.gap = true;
     // Preserve allocations from the prior format. A zero allocation did not prove
     // that a historical task consumed nothing, so it is not migrated as evidence.
     for (const [id, amount] of Object.entries(s.totals || {})) {
@@ -198,6 +255,43 @@ export class Estimator {
     });
   }
 
+  latestTurn(thread, now) {
+    const identity = turnIdentity(thread);
+    if (!identity) return null;
+    const s = this.state;
+    let record = s.latestTurns[thread.id];
+    // A temporarily regressed projection must not replace the latest ledger.
+    if (record && identity.startedAt !== null && record.startedAt !== null &&
+        identity.startedAt < record.startedAt && !sameTurn(record, identity)) return null;
+    const reopened = record?.terminal && this.previousThreads.has(thread.id) &&
+      thread.status === "active" && !thread.completedAt;
+    if (!sameTurn(record, identity) || reopened) {
+      const generation = (record?.generation || 0) + 1;
+      record = s.latestTurns[thread.id] = {
+        ...identity,
+        generation,
+        key: `${thread.id}:${generation}:${identity.turnId || identity.startedAt}`,
+        allocatedPercent: 0,
+        observedSeconds: 0,
+        hasAllocation: false,
+        observedSince: now,
+        partial: true,
+      };
+      // Keep old tokens in the task-wide pending total, never reassign them
+      // to this turn. Only subsequent, identified deltas enter this bucket.
+      s.pendingTurns[thread.id] = { key: record.key, tokens: 0 };
+      s.activity[thread.id] = [];
+    } else {
+      record.turnId ||= identity.turnId;
+      record.startedAt ??= identity.startedAt;
+      record.sequence ??= identity.sequence;
+    }
+    record.terminal = thread.status === "idle" && Number.isFinite(thread.completedAt);
+    record.completedAt = thread.completedAt ?? null;
+    if (this.lastAt === null) record.lastAttachedAt = now;
+    return record;
+  }
+
   local(threads, now, maxGapMs = 600000) {
     const s = this.state,
       previousAt = this.lastAt;
@@ -206,12 +300,17 @@ export class Estimator {
     if (previousAt !== null && !continuous) {
       s.gap = true;
       s.pending = {};
+      s.pendingTurns = {};
+      s.activity = {};
     }
     const intervals = new Map();
     for (const t of threads) {
       const old = this.previousThreads.get(t.id);
+      const latest = this.latestTurn(t, now);
+      const identified = Boolean(latest && old?.turnKey === latest.key &&
+        old.status !== "unknown" && t.status !== "unknown");
       let interval = null;
-      if (continuous && old) {
+      if (continuous && old && old.status !== "unknown" && t.status !== "unknown") {
         if (t.status === "active" && Number.isFinite(t.startedAt)) {
           interval = [Math.max(previousAt, t.startedAt), now];
         } else if (
@@ -230,18 +329,27 @@ export class Estimator {
       if (interval && interval[1] > interval[0]) {
         ledger.activeSeconds += (interval[1] - interval[0]) / 1000;
         intervals.set(t.id, interval);
+        if (identified) latest.observedSeconds += (interval[1] - interval[0]) / 1000;
       }
       const previous = s.lastTokens[t.id];
-      const tokens = Number.isFinite(t.tokens) ? t.tokens : 0;
+      const tokenKnown = Number.isFinite(t.tokens) && t.tokens >= 0 && t.tokensKnown !== false;
+      const tokens = tokenKnown ? t.tokens : null;
       const delta =
-        previous == null || (!continuous && previousAt !== null)
+        previous == null || !continuous || !old?.tokensKnown || !tokenKnown
           ? 0
           : Math.max(0, tokens - previous);
       s.lastTokens[t.id] = tokens;
       if (!/spark/.test(t.model || "")) {
         s.pending[t.id] = (s.pending[t.id] || 0) + delta;
+        if (identified && delta > 0) {
+          const bucket = s.pendingTurns[t.id];
+          if (!bucket || bucket.key !== latest.key)
+            s.pendingTurns[t.id] = { key: latest.key, tokens: delta };
+          else bucket.tokens += delta;
+        }
+        if (!identified || !continuous) s.activity[t.id] = [];
         const points = (s.activity[t.id] ||= []);
-        points.push({ at: now, delta });
+        points.push({ at: now, delta: identified ? delta : 0 });
         s.activity[t.id] = points
           .filter((p) => p.at >= now - 120000)
           .slice(-240);
@@ -261,6 +369,8 @@ export class Estimator {
           status: t.status,
           startedAt: t.startedAt,
           completedAt: t.completedAt,
+          turnKey: sameTurn(s.latestTurns[t.id], turnIdentity(t)) ? s.latestTurns[t.id]?.key : null,
+          tokensKnown: Number.isFinite(t.tokens) && t.tokens >= 0 && t.tokensKnown !== false,
         },
       ]),
     );
@@ -284,10 +394,12 @@ export class Estimator {
     if (unitChanged || ownerChanged) {
       s.sessionLedger = {};
       s.groupObservationSeconds = {};
+      s.latestTurns = {};
+      s.pendingTurns = {};
       s.sessionTrackingSince = now;
     }
     const reset =
-      !s.previous ||
+      !s.previous || unitChanged || ownerChanged ||
       s.previous.identity !== identity ||
       w.usedPercent < s.previous.used;
     if (reset) {
@@ -296,6 +408,7 @@ export class Estimator {
         since: now,
         totals: {},
         pending: {},
+        pendingTurns: {},
         observedPercent: 0,
         unattributedPercent: 0,
         calibratedTokens: 0,
@@ -319,15 +432,23 @@ export class Estimator {
             ledger.allocatedPercent += allocated;
             ledger.hasAllocation = true;
             if (ledger.activeSeconds > 0) ledger.timedPercent += allocated;
+            const latest = s.latestTurns[id];
+            const bucket = s.pendingTurns[id];
+            if (latest && bucket?.key === latest.key && bucket.tokens > 0) {
+              latest.allocatedPercent += allocated * Math.min(1, bucket.tokens / count);
+              latest.hasAllocation = true;
+            }
           }
           s.calibratedTokens += sum;
           s.calibratedPercent += delta;
         } else s.unattributedPercent += delta;
         s.pending = {};
+        s.pendingTurns = {};
       }
     }
     if (s.gap) {
       s.pending = {};
+      s.pendingTurns = {};
       s.gap = false;
     }
     s.accountUnit = unit;
@@ -363,6 +484,14 @@ export class Estimator {
       covered && ledger?.timedPercent > 0 && ledger.activeSeconds > 0
         ? ledger.activeSeconds / ledger.timedPercent
         : null;
+    const latest = s.latestTurns[thread.id];
+    const currentTurn = sameTurn(latest, turnIdentity(thread));
+    const latestAvailable = !latest || currentTurn;
+    const latestSeconds = latestAvailable ? latestTurnDuration(thread, now) : null;
+    const intervals = executionIntervals(thread, now, latestAvailable);
+    const totalSeconds = intervals.length || latestSeconds !== null || ledger?.activeSeconds > 0
+      ? Math.max(mergeDuration(intervals), latestSeconds || 0, ledger?.activeSeconds || 0) : null;
+    const futureRate = currentTurn && thread.status === "active" && percentRate > 0 ? 1 / percentRate : null;
     return {
       id: thread.id,
       title: thread.title || thread.id,
@@ -373,8 +502,19 @@ export class Estimator {
       childCount: 0,
       elapsedSeconds: safeDuration(thread, now),
       estimatedPercent: estimate,
-      secondsPerPercent:
-        thread.status === "active" && percentRate > 0 ? 1 / percentRate : null,
+      totalElapsedSeconds: totalSeconds,
+      totalEstimatedPercent: estimate,
+      latestTurnElapsedSeconds: latestSeconds,
+      latestTurnEstimatedPercent: covered && currentTurn && latest.hasAllocation
+        ? latest.allocatedPercent : null,
+      latestTurnSecondsPerPercent: futureRate,
+      latestTurnObservationSince: currentTurn ? latest.observedSince : null,
+      latestTurnLastAttachedAt: currentTurn ? latest.lastAttachedAt || latest.observedSince : null,
+      latestTurnCoverage: currentTurn
+        ? latest.recovered ? "partial-after-restart" : "monitoring-partial"
+        : "unavailable",
+      totalDurationCoverage: thread.executionHistory?.coverage || "partial",
+      secondsPerPercent: futureRate,
       averageSecondsPerPercent: average,
       observationSeconds: ledger?.activeSeconds || 0,
       estimateStatus: estimate === null ? "unavailable" : "allocated",
@@ -412,11 +552,12 @@ export class Estimator {
     }
     const order = new Map(s.sessionOrder.map((id, index) => [id, index]));
     const orderOf = (thread) => order.get(thread.id) ?? Number.MAX_SAFE_INTEGER;
+    const compare = (a, b) => Number(b.status === "active") - Number(a.status === "active") || orderOf(a) - orderOf(b);
     return groups
       .map((group) => {
         const members = group.members
           .slice()
-          .sort((a, b) => orderOf(a) - orderOf(b));
+          .sort(compare);
         const ownThread = members.find((t) => t.id === group.id) || group;
         const own = this.individual(ownThread, now);
         const rows = members.map((t) => this.individual(t, now));
@@ -446,6 +587,16 @@ export class Estimator {
           children,
           elapsedSeconds: elapsed,
           estimatedPercent: estimated,
+          totalElapsedSeconds: rows.some((row) => row.totalElapsedSeconds !== null)
+            ? Math.max(mergeDuration(group.members.flatMap((t) => executionIntervals(t, now,
+                !s.latestTurns[t.id] || sameTurn(s.latestTurns[t.id], turnIdentity(t))))), measured,
+                ...rows.map((row) => row.totalElapsedSeconds || 0)) : null,
+          totalEstimatedPercent: estimated,
+          latestTurnElapsedSeconds: own.latestTurnElapsedSeconds,
+          latestTurnEstimatedPercent: own.latestTurnEstimatedPercent,
+          latestTurnSecondsPerPercent: own.latestTurnSecondsPerPercent,
+          totalDurationCoverage: group.members.every((t) => t.executionHistory?.coverage === "local-records")
+            ? "local-records" : "partial",
           secondsPerPercent:
             group.status === "active" && rate > 0 ? 1 / rate : null,
           averageSecondsPerPercent:
@@ -467,6 +618,6 @@ export class Estimator {
           ownObservationSeconds: own.observationSeconds,
         };
       })
-      .sort((a, b) => orderOf(a) - orderOf(b));
+      .sort(compare);
   }
 }
