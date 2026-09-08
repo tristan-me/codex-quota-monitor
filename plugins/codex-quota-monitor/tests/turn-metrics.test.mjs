@@ -108,6 +108,7 @@ test("root totals include children once but latest turn belongs to the root itse
   assert.equal(row.latestTurnEstimatedPercent, .5);
   assert.equal(row.children[0].latestTurnEstimatedPercent, .5);
   assert.equal(row.totalElapsedSeconds, 80);
+  assert.equal(row.averageSecondsPerPercent, 80);
   assert.equal(row.latestTurnElapsedSeconds, 30);
   assert.equal(row.children[0].totalElapsedSeconds, 60);
 });

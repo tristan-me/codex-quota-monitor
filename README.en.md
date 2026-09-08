@@ -16,6 +16,8 @@ Please install and start this plugin, then provide a clickable URL in the chat w
 
 After installation, open a new local Codex conversation, type `@`, choose **Codex Quota Monitor** from the suggestions, and send: `打开 Codex 额度监控器。`
 
+![Select the plugin in a new conversation and open the monitor](docs/media/open-plugin.gif)
+
 Here is the complete Markdown mention text to send:
 
 ```markdown
@@ -40,6 +42,7 @@ Account, session, and consumption values in these screenshots are synthetic exam
 
 - Reads local SQLite metadata in read-only mode to discover sessions through both the new paginated path and the legacy path. It does not write to the Codex database.
 - Refreshes the local cache every 5 seconds by default and polls account quota every 30 seconds by default. Both intervals are configurable in the panel.
+- Uses a 24-hour sliding statistics window by default (`retentionHours`), configurable from 1 to 168 hours. Increasing the window does not restore observations that were already cleaned up and never deletes the original Codex records.
 - Shows official account remaining/used percentages and reset time without requiring a manually selected plan multiplier. When the service only returns Pro, the monitor does not guess 5x versus 20x.
 - Tracks samples after monitoring starts and displays consumption, observed speed, reset countdowns, and a linear exhaustion estimate based on the observed trend.
 - Probes `threadUsage` availability. This release allocates account-window changes by local token deltas; credit-based calibration remains future work. The tested account returns `threadUsage=null`.
@@ -47,27 +50,25 @@ Account, session, and consumption values in these screenshots are synthetic exam
 
   > Important: per-session percentages and speeds are transparent estimates, not official exact itemization or a guarantee about future usage.
 
-Three decimal places are a display format only. They do not imply that the underlying data or an official account breakdown has three-decimal accuracy. Insufficient samples remain marked as warming up instead of being shown as a fabricated zero rate.
+Percentages and decimal values are displayed to two decimal places; internal calculations retain higher precision. The display precision is not a claim about official itemization accuracy. Missing samples display `—` rather than a fabricated zero.
 
 ## Sessions and model overview
 
-Running sessions come first. Both the running and non-running groups retain their saved internal order; usage and update-time changes do not reshuffle them. A session that becomes idle moves below the remaining running sessions. Child sessions follow the same rule, and the underlying order survives service restarts.
-
 The right-edge table of contents expands on hover or keyboard focus. Search sessions by title keywords or exact IDs. The list starts with five root sessions per page, supports expanding five more at a time, and keeps child sessions collapsible. Search and expansion survive refreshes.
 
-Each task has two metric lines: total execution time, monitored quota estimate and measured average time per 1%; then its own latest turn's duration, separately observed quota estimate and current prediction. Parent totals include discovered children, with overlapping execution intervals counted once. Execution time uses retained local records, capped at the latest 5000 turns per thread; incomplete and legacy records remain partial.
+Each task has two metric lines: total execution time, monitored quota estimate and measured average time per 1%; then its own latest turn's duration, separately observed quota estimate and current prediction. Parent totals include discovered children, with overlapping execution intervals counted once. Execution time uses retained local records, capped at the latest 5000 turns per thread; incomplete and legacy records remain partial. The panel explains that elapsed time comes from locally retained execution records and may be incomplete.
 
-Quota totals and average rates only cover monitored samples, so the average is not calculated by dividing all historical duration by a partially observed quota total. Latest-turn quota is tracked separately and never copied from a task's lifetime allocation. Ambiguous deltas at a turn boundary do not enter the new turn. Earlier versions cannot backfill per-turn quota; missing evidence displays `—`, not zero. Idle tasks and tasks without recent samples do not promise a future rate.
+Quota totals and average rates only cover the selected sliding window, so the average is not calculated from retained history outside that window. Completed tasks use that turn's execution time and quota record; active tasks prefer token calibration from the latest 5-second sample, which is an estimate rather than an official exact five-second charge, and fall back to the current turn average when calibration is unavailable. Latest-turn quota is tracked separately and never copied from a task's total allocation. Missing evidence displays `—`, not zero.
 
 The model overview shows one model per page, with a selector and previous/next controls. Desktop cards use three rows: `ultra / max`, `xhigh / high`, and `medium / low`. Shared source notes appear above the cards. Local observations take priority; dated Codex Radar DeepSWE cost/hour ratios are only used with a comparable local calibration sample. API costs do not equal subscription percentages, and Spark's separate quota pool does not borrow calibration from the main Codex pool.
 
-## Cost and accuracy boundaries
+## Statistics and accuracy boundaries
 
-The UI reads the local cache every 5 seconds by default, about 720 local reads per hour. While the service is running, account quota is polled every 30 seconds by default, about 120 reads per hour. Model-list and thread-usage capability probes run at most hourly after success, with one-minute minimum retry after failure. Counters measure RPC calls; authentication and retries may cause additional HTTP requests. Refreshing the panel makes zero model calls, but local HTTP, SQLite, CPU, and network metadata reads still have a cost. The underlying Codex session that uses the tool continues to consume tokens and subscription quota normally.
+The UI reads the local cache every 5 seconds by default, about 720 local reads per hour. While the service is running, account quota is polled every 30 seconds by default, about 120 reads per hour. Model-list and thread-usage capability probes run at most hourly after success, with one-minute minimum retry after failure. Monitoring refreshes do not make model calls; the Codex task being monitored still consumes tokens and subscription quota normally. The phrase “the plugin does not consume Codex quota during monitoring” means the monitor does not initiate model calls; it does not make task execution free.
 
 The public Codex Reset timeline and forecast endpoints are each fetched every 15 minutes, about eight public GET requests per hour. Pausing background reads also pauses these requests. They contain no local account or session data, and a reference-source failure does not interrupt official quota reads.
 
-Account windows are account-level data. Per-session numbers are estimates covering samples after monitoring started, not lifetime session history. When `threadUsage=null`, the monitor can only allocate account changes by local token-delta proportions. The true weights of different models are unknown, and activity from other devices, background work, or undiscovered threads can contaminate the account window, so this mode is low confidence. If the account window changes without a matching local token delta, the difference remains in `unattributed` instead of being forced onto a session.
+Account windows are account-level data. Per-session numbers are estimates covering samples in the selected sliding window, not session history outside that window. When `threadUsage=null`, the monitor can only allocate account changes by local token-delta proportions. The true weights of different models are unknown, and activity from other devices, background work, or undiscovered threads can contaminate the account window, so this mode is low confidence. If the account window changes without a matching local token delta, the difference remains in `unattributed` instead of being forced onto a session.
 
 Personal reset timing follows the account window's reported countdown. Exhaustion timing is an estimate from observed speed. The two latest official completion announcements are shown separately with post timestamps and evidence; announcement time is not per-account arrival telemetry. Surprise-reset probabilities come from an experimental third-party forecast. When no future official window exists, a clearly labeled observation window is calculated from the published historical time-of-day rule; it is not a promised reset time or the interval associated with the 24/48-hour probabilities.
 
@@ -96,6 +97,10 @@ codex plugin add codex-quota-monitor@codex-quota-monitor
 
 After installation, open “Settings → Plugins” in the desktop app and confirm that **Codex Quota Monitor** is enabled. Then start a new local conversation, type `@`, select the plugin, and send `打开 Codex 额度监控器。`; the plugin starts the local service and returns the current valid URL in the chat.
 
+The installation GIF shows a post-install check and launch flow; it is not a fresh-install recording:
+
+![Post-install check and launch](docs/media/install-and-launch.gif)
+
 Identify the plugin by these manifest fields; this table is not a screenshot of the native settings page:
 
 | Field | Value |
@@ -105,20 +110,9 @@ Identify the plugin by these manifest fields; this table is not a screenshot of 
 | Developer | Quanli Li |
 | Plugin / marketplace ID | `codex-quota-monitor@codex-quota-monitor` |
 
+![Installed plugin details](docs/images/plugin-details.jpg)
+
 The official general guide is [Plugins in ChatGPT](https://learn.chatgpt.com/docs/plugins). Desktop menu labels may vary by build.
-
-From the repository root, start the independent panel:
-
-```bash
-node plugins/codex-quota-monitor/server/launcher.mjs
-```
-
-In a second terminal, add the local marketplace to Codex and install the plugin:
-
-```bash
-codex plugin marketplace add https://github.com/tristan-me/codex-quota-monitor
-codex plugin add codex-quota-monitor@codex-quota-monitor
-```
 
 ### Optional: local registration and an independent launcher after cloning
 
@@ -151,6 +145,8 @@ Live and demo state, credentials, and endpoints are isolated. Demo pages are exp
 - Closing the web page does not stop the background service, so the same bookmark can be reopened while the service is still running.
 - After a reboot or service stop, the old bookmark does not start anything. Run `Open-Monitor.command` again, or open the plugin from a new local conversation so the plugin can provide the current valid URL.
 - An HTTP bookmark does not launch the desktop app or start a stopped background service automatically.
+
+![Save the current valid URL with its complete token](docs/images/bookmark.jpg)
 
 ## Privacy
 

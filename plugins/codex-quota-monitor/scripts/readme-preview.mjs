@@ -247,9 +247,10 @@ function readmeSessions(now) {
   const enrichOwn = (item, latestEstimate) => ({...item,
     totalElapsedSeconds: unionSeconds([historyInterval, latestInterval(item)]),
     totalEstimatedPercent: item.estimatedPercent,
+    averageSecondsPerPercent: item.estimatedPercent > 0 ? unionSeconds([historyInterval, latestInterval(item)]) / item.estimatedPercent : null,
     latestTurnElapsedSeconds: Math.max(0, (latestInterval(item)[1] - latestInterval(item)[0]) / 1000),
     latestTurnEstimatedPercent: latestEstimate,
-    latestTurnSecondsPerPercent: item.secondsPerPercent,
+    latestTurnSecondsPerPercent: item.secondsPerPercent || (latestEstimate > 0 ? Math.max(0, (latestInterval(item)[1] - latestInterval(item)[0]) / 1000) / latestEstimate : null),
   });
   return [rootInterface, rootTests, rootDocs, rootRelease].map(root=>{
     const own=ownMetrics(root), children=root.children.map(ownMetrics);
@@ -263,8 +264,8 @@ function readmeSessions(now) {
       totalElapsedSeconds,totalEstimatedPercent:total,
       observationSeconds:observedGroupSeconds,
       secondsPerPercent:root.status==='active'&&activeRate>0?1/activeRate:null,
-      latestTurnSecondsPerPercent:own.secondsPerPercent,
-      averageSecondsPerPercent:total>0?observedGroupSeconds/total:null,
+      latestTurnSecondsPerPercent:ownWithTotals.latestTurnSecondsPerPercent,
+      averageSecondsPerPercent:total>0?totalElapsedSeconds/total:null,
       ownStatus:own.status,ownEstimatedPercent:own.estimatedPercent,
       ownSecondsPerPercent:own.secondsPerPercent,ownAverageSecondsPerPercent:own.averageSecondsPerPercent,
       ownObservationSeconds:own.observationSeconds,observationSince:now-75*MINUTE_MS};
@@ -348,6 +349,7 @@ export function createReadmeSnapshot({ now = Date.now(), resetRadar = null } = {
     settings: {
       pollSeconds: 5,
       quotaPollSeconds: 30,
+      retentionHours: 24,
       paused: false,
       autoSwitch: false,
       hideDisclaimer: false,
@@ -426,7 +428,7 @@ export function createReadmeSnapshot({ now = Date.now(), resetRadar = null } = {
     },
     diagnostics: [
       { level: "info", message: "演示模式：会话、额度、速率、趋势和模型数据均为合成示例。" },
-      { level: "info", message: "账户剩余 72.345% 是显式合成值，不代表任何真实账户。" },
+      { level: "info", message: "账户剩余 72.35% 是合成示例，不代表任何真实账户。" },
     ],
     history,
     reset: {

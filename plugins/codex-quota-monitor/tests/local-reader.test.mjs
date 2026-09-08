@@ -654,6 +654,65 @@ test("uses bounded legacy rollout parsing for lifecycle and token_count evidence
   assert.equal(JSON.stringify(result).includes("secret content"), false);
 });
 
+test("uses the configured retention window for inactive discovery while retaining recent active complements", async (t) => {
+  const home = await makeHome();
+  t.after(() => fs.rm(home, { recursive: true, force: true }));
+  const now = 1_800_000_000_000;
+  const seconds = Math.floor(now / 1000);
+  makeStateDb(home, [
+    {
+      id: "recent-idle",
+      title: "Recent idle",
+      model: "gpt-5.6-sol",
+      source: "vscode",
+      tokens_used: 10,
+      updated_at_ms: now - 2 * 60 * 60 * 1000,
+    },
+    {
+      id: "retired-idle",
+      title: "Retired idle",
+      model: "gpt-5.6-sol",
+      source: "vscode",
+      tokens_used: 20,
+      updated_at_ms: now - 25 * 60 * 60 * 1000,
+    },
+    {
+      id: "active-complement",
+      title: "Active complement",
+      model: "gpt-5.6-sol",
+      source: "vscode",
+      tokens_used: 30,
+      updated_at_ms: now - 25 * 60 * 60 * 1000,
+    },
+  ]);
+  makeHistoryDb(home, [
+    { thread_id: "recent-idle", turn_id: "recent", rollout_ordinal: 1,
+      status: "completed", started_at: seconds - 7300, completed_at: seconds - 7200 },
+    { thread_id: "retired-idle", turn_id: "retired", rollout_ordinal: 1,
+      status: "completed", started_at: seconds - 25 * 3600 - 100,
+      completed_at: seconds - 25 * 3600 },
+    { thread_id: "active-complement", turn_id: "active", rollout_ordinal: 1,
+      status: "inProgress", started_at: seconds - 10 },
+  ]);
+
+  const reader = new LocalReader({ codexHome: home, now });
+  const daily = reader.read();
+  assert.deepEqual(daily.threads.map((thread) => thread.id).sort(), [
+    "active-complement",
+    "recent-idle",
+  ]);
+  assert.equal(daily.diagnostics.retentionHours, 24);
+  assert.equal(daily.diagnostics.recentWindowMs, DAY_MS);
+
+  const twoDays = reader.read({ retentionHours: 48 });
+  assert.deepEqual(twoDays.threads.map((thread) => thread.id).sort(), [
+    "active-complement",
+    "recent-idle",
+    "retired-idle",
+  ]);
+  assert.equal(twoDays.diagnostics.recentWindowMs, 2 * DAY_MS);
+});
+
 test("caps the recent page at 200 while adding all recent active turns", async (t) => {
   const home = await makeHome();
   t.after(() => fs.rm(home, { recursive: true, force: true }));

@@ -4,7 +4,10 @@ import os from "node:os";
 import path from "node:path";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-const RECENT_WINDOW_MS = 7 * DAY_MS;
+const RECENT_WINDOW_MS = DAY_MS;
+const MIN_RETENTION_HOURS = 1;
+const MAX_RETENTION_HOURS = 168;
+const ACTIVE_STALE_WINDOW_MS = MAX_RETENTION_HOURS * 60 * 60 * 1000;
 const RECENT_THREAD_LIMIT = 200;
 const MAX_ROLLOUT_TAIL_BYTES = 8 * 1024 * 1024;
 const MAX_ROLLOUT_LINE_BYTES = 2 * 1024 * 1024;
@@ -727,12 +730,12 @@ function activityEvidence({ source, latestTurn, stale, eventCount = 0 }) {
   };
 }
 
-function classifyActivity(latestTurn, now) {
+function classifyActivity(latestTurn, now, staleWindowMs = ACTIVE_STALE_WINDOW_MS) {
   if (!latestTurn) return { status: "unknown", stale: false };
   const classified = statusClass(latestTurn.status);
   if (classified !== "active") return { status: classified, stale: false };
   const startedAt = latestTurn.startedAt;
-  const stale = startedAt === null || now - startedAt > RECENT_WINDOW_MS;
+  const stale = startedAt === null || now - startedAt > staleWindowMs;
   return stale
     ? { status: "unknown", stale: true }
     : { status: "active", stale: false };
@@ -746,13 +749,19 @@ export class LocalReader {
     this.now = now;
   }
 
-  read() {
+  read({ retentionHours = 24 } = {}) {
     const now = nowValue(this.now);
-    const cutoffMs = now - RECENT_WINDOW_MS;
+    const normalizedRetentionHours = Number.isInteger(retentionHours) &&
+      retentionHours >= MIN_RETENTION_HOURS && retentionHours <= MAX_RETENTION_HOURS
+      ? retentionHours : 24;
+    const recentWindowMs = normalizedRetentionHours * 60 * 60 * 1000;
+    const cutoffMs = now - recentWindowMs;
     const diagnostics = {
       ok: true,
       readOnly: true,
-      recentWindowMs: RECENT_WINDOW_MS,
+      recentWindowMs,
+      retentionHours: normalizedRetentionHours,
+      activeStaleWindowMs: ACTIVE_STALE_WINDOW_MS,
       recentThreadLimit: RECENT_THREAD_LIMIT,
       stateDb: {
         path: path.join(this.codexHome, "state_5.sqlite"),

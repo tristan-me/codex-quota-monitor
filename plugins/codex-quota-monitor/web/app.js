@@ -83,12 +83,12 @@
 
   function formatPercent(value) {
     const parsed = finiteNumber(value);
-    return parsed === null ? '—' : `${parsed.toFixed(3)}%`;
+    return parsed === null ? '—' : `${parsed.toFixed(2)}%`;
   }
 
   function formatCredits(value) {
     const parsed = finiteNumber(value);
-    return parsed === null ? '—' : parsed.toFixed(3);
+    return parsed === null ? '—' : parsed.toFixed(2);
   }
 
   function formatDuration(value, empty = '—') {
@@ -223,6 +223,7 @@
     return {
       pollSeconds: boundedNumber(source.pollSeconds, 5, 2, 300),
       quotaPollSeconds: boundedNumber(source.quotaPollSeconds, 30, 5, 3600),
+      retentionHours: boundedNumber(source.retentionHours, 24, 1, 168),
       paused: source.paused === true,
       autoSwitch: source.autoSwitch === true,
       hideDisclaimer: source.hideDisclaimer === true,
@@ -376,7 +377,7 @@
     const parsed = finiteNumber(value);
     if (parsed === null) return '';
     const percentage = parsed <= 1 ? parsed * 100 : parsed;
-    return `置信度 ${percentage.toFixed(1)}%`;
+    return `置信度 ${percentage.toFixed(2)}%`;
   }
 
   function summaryStatus(snapshot) {
@@ -544,7 +545,7 @@
     const multiplier = finiteNumber(plan.multiplier);
     setText('planMultiplierNote', multiplier === null
       ? '接口未区分 5x/20x；不用于计算官方百分比或重置，也不自动假设 Plus。'
-      : `接口报告倍率 ${multiplier.toFixed(3)}x；官方百分比和重置仍直接取额度接口。`, '接口未提供倍率信息。');
+      : `接口报告倍率 ${multiplier.toFixed(2)}x；官方百分比和重置仍直接取额度接口。`, '接口未提供倍率信息。');
   }
 
   function sessionQueryTokens(query) {
@@ -619,7 +620,7 @@
     if (searchInput && searchInput.value !== state.sessionQuery && document.activeElement !== searchInput) searchInput.value = state.sessionQuery;
     setText('sessionSummaryText', summaryStatus(snapshot), '等待会话样本');
     const settings = getSettings(snapshot);
-    setText('sessionRefreshHint', `每 ${settings.pollSeconds} 秒更新`, '每 5 秒更新');
+    setText('sessionRefreshHint', `最近 ${settings.retentionHours} 小时 · 每 ${settings.pollSeconds} 秒更新`, '最近 24 小时 · 每 5 秒更新');
     if (!sessions) {
       list.append(textElement('div', 'empty-state', '等待本地会话快照'));
       renderSessionPagination(0, 0);
@@ -680,8 +681,8 @@
       const metrics = sessionTotals(session);
       const statLine = document.createElement('div');
       statLine.className = 'session-stat-line';
-      const totalLine = `任务总计耗时${formatDuration(metrics.totalElapsedSeconds)}，任务总计消耗估算${formatPercent(metrics.totalEstimatedPercent)}，平均每 1% 额度能撑 ${formatDuration(metrics.averageSecondsPerPercent)}；`;
-      const latestLine = `最近一次会话耗时${formatDuration(metrics.latestTurnElapsedSeconds)}，最近一次会话消耗估算${formatPercent(metrics.latestTurnEstimatedPercent)}，预计接下来每 1% 额度能撑 ${formatDuration(metrics.secondsPerPercent)}`;
+      const totalLine = `任务总耗时${formatDuration(metrics.totalElapsedSeconds)}，任务消耗额度${formatPercent(metrics.totalEstimatedPercent)}，平均每 1% 额度能撑 ${formatDuration(metrics.averageSecondsPerPercent)}；`;
+      const latestLine = `最近一次会话耗时${formatDuration(metrics.latestTurnElapsedSeconds)}，最近一次会话消耗额度${formatPercent(metrics.latestTurnEstimatedPercent)}，预计接下来每 1% 额度能撑 ${formatDuration(metrics.secondsPerPercent)}`;
       statLine.append(textElement('span', 'session-stat-line-block', totalLine));
       statLine.append(textElement('span', 'session-stat-line-block', latestLine));
       row.append(statLine);
@@ -748,8 +749,8 @@
             const childMetrics = sessionTotals(child);
             const childLine = document.createElement('div');
             childLine.className = 'session-stat-line';
-            childLine.append(textElement('span', 'session-stat-line-block', `任务总计耗时${formatDuration(childMetrics.totalElapsedSeconds)}，任务总计消耗估算${formatPercent(childMetrics.totalEstimatedPercent)}，平均每 1% 额度能撑 ${formatDuration(childMetrics.averageSecondsPerPercent)}；`));
-            childLine.append(textElement('span', 'session-stat-line-block', `最近一次会话耗时${formatDuration(childMetrics.latestTurnElapsedSeconds)}，最近一次会话消耗估算${formatPercent(childMetrics.latestTurnEstimatedPercent)}，预计接下来每 1% 额度能撑 ${formatDuration(childMetrics.secondsPerPercent)}`));
+            childLine.append(textElement('span', 'session-stat-line-block', `任务总耗时${formatDuration(childMetrics.totalElapsedSeconds)}，任务消耗额度${formatPercent(childMetrics.totalEstimatedPercent)}，平均每 1% 额度能撑 ${formatDuration(childMetrics.averageSecondsPerPercent)}；`));
+            childLine.append(textElement('span', 'session-stat-line-block', `最近一次会话耗时${formatDuration(childMetrics.latestTurnElapsedSeconds)}，最近一次会话消耗额度${formatPercent(childMetrics.latestTurnEstimatedPercent)}，预计接下来每 1% 额度能撑 ${formatDuration(childMetrics.secondsPerPercent)}`));
             childRow.append(childLine);
             childList.append(childRow);
           });
@@ -778,19 +779,23 @@
     const observed = finiteNumber(attribution.observedPercent);
     const estimated = finiteNumber(attribution.estimatedPercent);
     const unattributed = finiteNumber(attribution.unattributedPercent);
-    const attributedTotal = observed !== null && observed > 0 && estimated !== null
+    const partialHistory = /lower-bound/.test(safeText(attribution.estimatedPercentCoverage, ''));
+    const attributedTotal = !partialHistory && observed !== null && observed > 0 && estimated !== null
       ? Math.min(100, Math.max(0, (estimated / observed) * 100))
       : null;
     setText('attributionTotal', attributedTotal === null ? '—' : formatPercent(attributedTotal), '—');
-    setText('observedPercent', observed === null ? '—' : formatPercent(observed), '—');
+    setText('observedPercent', observed === null ? '—' : `${partialHistory ? '≥ ' : ''}${formatPercent(observed)}`, '—');
     setText('estimatedPercent', estimated === null ? '—' : formatPercent(estimated), '—');
-    setText('unattributedPercent', unattributed === null ? '—' : formatPercent(unattributed), '—');
+    setText('unattributedPercent', partialHistory || unattributed === null ? '—' : formatPercent(unattributed), '—');
     updateProgressBar('observedBar', observed);
     updateProgressBar('estimatedBar', estimated);
     updateProgressBar('unattributedBar', unattributed);
     const sinceDate = parseDate(attribution.since);
     setText('attributionSince', sinceDate ? `从 ${formatDate(sinceDate)}` : safeText(attribution.since, '等待样本'), '等待样本');
     setText('attributionWindow', safeText(attribution.windowLabel, '尚未收到窗口范围。'), '尚未收到窗口范围。');
+    setText('attributionNote', partialHistory
+      ? '旧数据缺少完整时间戳，已观察仅为可恢复下限，暂不计算归因比例。任务中的 token 校准暂估会在下一次账户采样后核对。'
+      : '归因按统计窗口内的账户变化估算，可能混入其他设备消耗；任务中的 token 校准暂估会在下一次账户采样后核对。');
   }
 
   function renderAccountWindows(snapshot) {
@@ -1059,7 +1064,7 @@
           const seconds = finiteNumber(row.secondsPerPercent);
           const quotaPerHour = finiteNumber(row.quotaPercentPerHour);
           const referenceCost = finiteNumber(row.referenceCostPerHour);
-          [['每1%时间', seconds === null || seconds <= 0 ? '—' : formatDuration(seconds, '—')], ['额度速率', quotaPerHour === null ? '—' : `${quotaPerHour.toFixed(3)}%/时`], ['参考成本', referenceCost === null ? '—' : `$${referenceCost.toFixed(2)}/时`]].forEach(([label, value]) => {
+          [['每1%时间', seconds === null || seconds <= 0 ? '—' : formatDuration(seconds, '—')], ['额度速率', quotaPerHour === null ? '—' : `${quotaPerHour.toFixed(2)}%/时`], ['参考成本', referenceCost === null ? '—' : `$${referenceCost.toFixed(2)}/时`]].forEach(([label, value]) => {
             const metric = document.createElement('div');
             metric.className = 'model-overview-metric';
             metric.append(textElement('span', '', label));
@@ -1121,24 +1126,6 @@
     if (objective && document.activeElement !== objective) objective.value = settings.objective;
     if (autoSwitch && document.activeElement !== autoSwitch) autoSwitch.checked = settings.autoSwitch;
     if (restore) restore.disabled = state.restoreSaving || state.mode !== 'live' || state.offline;
-  }
-
-  function renderCost(snapshot) {
-    const cost = isRecord(snapshot) && isRecord(snapshot.cost) ? snapshot.cost : {};
-    const countValue = (value) => finiteNumber(value) === null ? '—' : String(Math.max(0, Math.round(finiteNumber(value))));
-    setText('localReads', countValue(cost.localReads), '—');
-    setText('remoteReads', countValue(cost.remoteReads), '—');
-    const localMs = finiteNumber(cost.lastLocalMs);
-    const requests = finiteNumber(cost.requestsPerHour);
-    const llmCalls = finiteNumber(cost.llmCalls);
-    setText('lastLocalMs', localMs === null ? '—' : `${localMs.toFixed(1)} ms`, '—');
-    setText('requestsPerHour', requests === null ? '—' : requests.toFixed(1), '—');
-    setText('llmCalls', llmCalls === null ? '—' : String(Math.max(0, Math.round(llmCalls))), '—');
-    const settings = getSettings(snapshot);
-    const remoteText = finiteNumber(cost.remoteReads) === null ? '远程额度读取按账户额度频率执行' : `已记录 ${countValue(cost.remoteReads)} 次远程额度读取`;
-    const llmText = llmCalls === null ? 'LLM 调用等待统计' : `本面板记录 ${Math.max(0, Math.round(llmCalls))} 次 LLM 调用`;
-    const resetCost = finiteNumber(cost.resetRadarRefreshSeconds) ? `公开重置资料每 ${Math.round(cost.resetRadarRefreshSeconds / 60)} 分钟读取一次时间线和预测，累计 ${countValue(cost.resetRadarRequests)} 次网站请求。` : '';
-    setText('costExplanation', `每次本地更新通常是 1 次 GET /api/snapshot（约 ${settings.pollSeconds} 秒一次）；${remoteText}（当前 ${settings.quotaPollSeconds} 秒间隔）。${llmText}。${resetCost}归因可能使用本机 token 占比假设分摊；可能混入其他设备消耗，不能当作官方拆账。`, '等待成本统计');
   }
 
   function renderReset(snapshot) {
@@ -1254,7 +1241,7 @@
     const forecast = isRecord(radar.forecast) ? radar.forecast : {};
     const probabilityText = (value) => {
       const number = finiteNumber(value);
-      return number === null ? '—' : `${(Math.min(1, Math.max(0, number)) * 100).toFixed(1)}%`;
+      return number === null ? '—' : `${(Math.min(1, Math.max(0, number)) * 100).toFixed(2)}%`;
     };
     setText('forecastProbability24h', finiteNumber(forecast.probability24hPercent) === null ? probabilityText(forecast.probability24h) : `${forecast.probability24hPercent}%`, '—');
     setText('forecastProbability48h', finiteNumber(forecast.probability48hPercent) === null ? probabilityText(forecast.probability48h) : `${forecast.probability48hPercent}%`, '—');
@@ -1358,9 +1345,11 @@
     const settings = getSettings(snapshot);
     const poll = $('pollSecondsInput');
     const quotaPoll = $('quotaPollSecondsInput');
+    const retention = $('retentionHoursInput');
     const paused = $('pausedCheckbox');
     if (poll && document.activeElement !== poll) poll.value = String(settings.pollSeconds);
     if (quotaPoll && document.activeElement !== quotaPoll) quotaPoll.value = String(settings.quotaPollSeconds);
+    if (retention && document.activeElement !== retention) retention.value = String(settings.retentionHours);
     if (paused && document.activeElement !== paused) paused.checked = settings.paused;
     const reminder = $('restoreDisclaimerBtn');
     if (reminder) reminder.disabled = state.reminderSaving;
@@ -1398,7 +1387,6 @@
     renderAttribution(safeSnapshot);
     renderTrend(safeSnapshot);
     renderRecommendation(safeSnapshot);
-    renderCost(safeSnapshot);
     renderReset(safeSnapshot);
     renderResetRadar(safeSnapshot);
     renderDiagnostics(safeSnapshot);
@@ -1615,6 +1603,8 @@
     if (poll) poll.addEventListener('change', () => queueSettingsPatch({ pollSeconds: readIntegerInput('pollSecondsInput', 2, 300, 5) }));
     const quotaPoll = $('quotaPollSecondsInput');
     if (quotaPoll) quotaPoll.addEventListener('change', () => queueSettingsPatch({ quotaPollSeconds: readIntegerInput('quotaPollSecondsInput', 5, 3600, 30) }));
+    const retention = $('retentionHoursInput');
+    if (retention) retention.addEventListener('change', () => queueSettingsPatch({ retentionHours: readIntegerInput('retentionHoursInput', 1, 168, 24) }));
     const paused = $('pausedCheckbox');
     if (paused) paused.addEventListener('change', () => queueSettingsPatch({ paused: paused.checked }));
     const objective = $('objectiveSelect');

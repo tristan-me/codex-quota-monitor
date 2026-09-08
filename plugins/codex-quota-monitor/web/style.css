@@ -1861,6 +1861,10 @@ button:disabled {
   gap: 26px;
 }
 
+.settings-layout-single {
+  grid-template-columns: 1fr;
+}
+
 .settings-form {
   display: grid;
   align-content: start;

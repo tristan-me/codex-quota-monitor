@@ -20,6 +20,7 @@ test("README preview is deterministic, synthetic, and complete for screenshot da
   assert.equal(first.account.plan.type, "pro");
   assert.equal(first.account.plan.multiplier, null);
   assert.equal(first.account.stale, false);
+  assert.equal(first.settings.retentionHours, 24);
   assert.equal(first.cost.llmCalls, 0);
   assert.equal(first.cost.modelCalls, 0);
   assert.equal(first.cost.localRead, 18);
@@ -70,7 +71,7 @@ test("preview sessions have safe demo IDs, expandable children, and rate fields"
   assert.equal(interfaceRoot.totalElapsedSeconds, 55 * 60);
   assert.equal(interfaceTests.totalElapsedSeconds, 41 * 60);
   assert.equal(interfaceRoot.observationSeconds, 1224);
-  assert.ok(Math.abs(interfaceRoot.averageSecondsPerPercent * interfaceRoot.totalEstimatedPercent - 1224) < 1e-8);
+  assert.ok(Math.abs(interfaceRoot.averageSecondsPerPercent * interfaceRoot.totalEstimatedPercent - 3300) < 1e-8);
   assert.ok(interfaceTests.latestTurnElapsedSeconds <= interfaceTests.totalElapsedSeconds);
   assert.ok(interfaceTests.latestTurnEstimatedPercent <= interfaceTests.totalEstimatedPercent);
   const serialized = JSON.stringify(snapshot);

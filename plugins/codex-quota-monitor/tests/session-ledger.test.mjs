@@ -84,18 +84,18 @@ test("completed threads keep measured averages and do not show future rates", ()
   assert.equal(root.children[0].secondsPerPercent, null);
   assert.equal(root.children[0].averageSecondsPerPercent, 120);
 });
-test("account reset clears window totals but retains observed session allocations", () => {
+test("account reset clears calibration but keeps retained observation and session allocations", () => {
   const e = sampled();
   e.quota(quota(0, now + 900000), now + 70000, "account");
-  assert.equal(e.state.observedPercent, 0);
+  assert.equal(e.state.observedPercent, 1);
   assert.equal(e.state.calibratedTokens, 0);
   const root = e.sessions(
     [row("root", 100), row("child", 100, "active", { parentThreadId: "root" })],
     now + 70000,
   )[0];
   assert.equal(root.estimatedPercent, 1);
-  assert.equal(root.secondsPerPercent, null);
-  assert.equal(root.averageSecondsPerPercent, 60);
+  assert.ok(root.secondsPerPercent > 0);
+  assert.equal(root.averageSecondsPerPercent, 70);
 });
 test("switching account never reuses the previous account session ledger", () => {
   const e = sampled();
@@ -105,10 +105,10 @@ test("switching account never reuses the previous account session ledger", () =>
     null,
   );
 });
-test("legacy positive allocations migrate while legacy zeros remain unavailable", () => {
+test("legacy allocations without time evidence remain unavailable", () => {
   const e = new Estimator({ totals: { a: 0.125, old: 0 } });
   const s = e.sessions([row("a", 20, "idle"), row("old", 100, "idle")], now);
-  assert.equal(s.find((t) => t.id === "a").estimatedPercent, 0.125);
+  assert.equal(s.find((t) => t.id === "a").estimatedPercent, null);
   assert.equal(s.find((t) => t.id === "a").averageSecondsPerPercent, null);
   assert.equal(s.find((t) => t.id === "old").estimatedPercent, null);
 });

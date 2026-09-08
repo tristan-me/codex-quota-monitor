@@ -22,3 +22,6 @@ tmp/
 .codex/
 .idea/
 .vscode/
+
+# Unedited recordings can contain private account and task data.
+/素材/

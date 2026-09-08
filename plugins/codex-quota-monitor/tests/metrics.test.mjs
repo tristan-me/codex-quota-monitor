@@ -70,13 +70,14 @@ test("startup is uncalibrated; zero-change samples accumulate until account tick
     e.sessions([thread("a", 400)], now + 90000)[0].secondsPerPercent > 0,
   );
 });
-test("unobserved account usage remains unattributed and resets do not go negative", () => {
+test("unobserved account usage stays in the retention ledger across a quota reset", () => {
   const e = new Estimator();
   e.quota(window(10), now, "one");
   e.quota(window(11), now + 1000, "one");
   assert.equal(e.state.unattributedPercent, 1);
   e.quota(window(1), now + 2000, "one");
-  assert.equal(e.state.observedPercent, 0);
+  assert.equal(e.state.observedPercent, 1);
+  assert.equal(e.state.unattributedPercent, 1);
   assert.deepEqual(e.state.totals, {});
   e.quota(window(20), now + 3000, "two");
   assert.equal(e.state.observedPercent, 0);
@@ -109,7 +110,7 @@ test("children fold into root without double counting; Spark stays outside main 
   assert.equal(s.find((x) => x.id === "spark").estimatedPercent, null);
   assert.equal(groupThreads(rows)[0].childCount, 1);
 });
-test("idle and silent tasks do not promise a future rate", () => {
+test("idle tasks have no future rate while silent active turns use their average", () => {
   const e = new Estimator();
   e.local([thread("a", 0)], now);
   e.quota(window(), now, "one");
@@ -120,10 +121,10 @@ test("idle and silent tasks do not promise a future rate", () => {
     null,
   );
   e.local([thread("a", 100)], now + 200000);
-  assert.equal(
-    e.sessions([thread("a", 100)], now + 200000)[0].secondsPerPercent,
-    null,
-  );
+  const active = e.sessions([thread("a", 100)], now + 200000)[0];
+  assert.equal(active.secondsPerPercent, 260);
+  assert.equal(active.rateSource, "aggregate-active-task-rates");
+  assert.equal(active.latestTurnRateSource, "turn-average-fallback");
 });
 test("restart preserves totals but attributes offline account changes to unknown usage", () => {
   const e = new Estimator();

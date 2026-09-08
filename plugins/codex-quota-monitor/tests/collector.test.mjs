@@ -170,3 +170,26 @@ test("do-not-remind preference is persisted independently of browser origin", as
     await f.cleanup();
   }
 });
+
+test("local discovery receives the same configurable retention window as the estimator", async () => {
+  const f = await fixture();
+  const observed = [];
+  f.c.reader = {
+    read: (options) => {
+      observed.push(options);
+      return { threads: [], diagnostics: {} };
+    },
+  };
+  try {
+    await f.c.local();
+    await f.c.update({ retentionHours: 48 });
+    await f.c.local();
+    assert.deepEqual(observed, [
+      { retentionHours: 24 },
+      { retentionHours: 48 },
+    ]);
+    assert.equal(f.c.estimator.state.retentionHours, 48);
+  } finally {
+    await f.cleanup();
+  }
+});

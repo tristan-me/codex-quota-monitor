@@ -47,7 +47,7 @@
           <a href="#trendSection" data-target="trendSection" title="账户余量趋势"><span aria-hidden="true">⌁</span><span>趋势</span></a>
           <a href="#modelSection" data-target="modelSection" title="模式总览"><span aria-hidden="true">◆</span><span>模式</span></a>
           <a href="#resetSection" data-target="resetSection" title="重置预测"><span aria-hidden="true">↻</span><span>重置</span></a>
-          <a href="#settings" data-target="settings" title="刷新设置与成本"><span aria-hidden="true">⚙</span><span>设置</span></a>
+          <a href="#settings" data-target="settings" title="刷新与统计设置"><span aria-hidden="true">⚙</span><span>设置</span></a>
           <a href="#diagnosticsSection" data-target="diagnosticsSection" title="诊断"><span aria-hidden="true">✓</span><span>诊断</span></a>
         </div>
       </nav>
@@ -74,7 +74,7 @@
             <h1 id="overview-title">看见每个会话的消耗节奏</h1>
             <p class="hero-note">
               <span class="note-mark" aria-hidden="true">i</span>
-              每会话百分比和速度是透明标注的估算值；三位小数是显示精度，不代表官方精确拆账。账户归因可能按本机 token 占比假设分摊，可能混入其他设备消耗。
+              本插件监控期不消耗codex额度。
             </p>
           </div>
           <div class="hero-metrics" aria-label="账户官方指标与会话状态">
@@ -119,7 +119,7 @@
               </div>
               <span id="sessionRefreshHint" class="panel-header-meta">每 5 秒更新</span>
             </div>
-            <p class="panel-note">耗时来自本机保留的执行记录（可能不完整）；额度与平均速度仅覆盖监控样本。父任务总计含子任务，最近一次为自身最近一轮；— 表示缺少样本。</p>
+            <p class="panel-note">总耗时、额度与均速按设置中的滑动窗口统计；父任务包含子任务，最近一次为自身最近一轮。运行中优先使用最近 5 秒的校准估算，已完成使用该轮均速；— 表示缺少样本。额度与速度为估算，本机执行记录可能不完整。</p>
             <div class="session-tools">
               <label class="session-search-label" for="sessionSearch">筛选会话</label>
               <div class="session-search-control">
@@ -194,7 +194,7 @@
               </div>
             </div>
             <p id="attributionWindow" class="muted-copy">尚未收到窗口范围。</p>
-            <p class="small-note">归因可能使用本机 token 占比假设分摊，可能混入其他设备消耗。</p>
+            <p id="attributionNote" class="small-note">归因按统计窗口内的账户变化估算，可能混入其他设备消耗。</p>
           </section>
 
           <section id="trendSection" class="panel trend-panel panel-wide" aria-labelledby="trend-title">
@@ -329,12 +329,12 @@
           <section id="settings" class="panel settings-panel panel-wide" aria-labelledby="settings-title">
             <div class="panel-header">
               <div>
-                <p class="section-kicker">POLLING &amp; COST</p>
-                <h2 id="settings-title">刷新设置与成本</h2>
+                <p class="section-kicker">POLLING &amp; RETENTION</p>
+                <h2 id="settings-title">刷新与统计设置</h2>
               </div>
               <span id="settingsSaveStatus" class="panel-header-meta" role="status" aria-live="polite">本地读取中</span>
             </div>
-            <div class="settings-layout">
+            <div class="settings-layout settings-layout-single">
               <div class="settings-form" aria-label="刷新设置">
                 <div class="field-group">
                   <label class="field-label" for="pollSecondsInput">本地快照频率</label>
@@ -346,6 +346,11 @@
                   <div class="input-with-unit"><input id="quotaPollSecondsInput" type="number" min="5" max="3600" step="1" inputmode="numeric"><span>秒</span></div>
                   <p class="field-help">控制后端远程额度读取的最低间隔，范围 5–3600 秒。</p>
                 </div>
+                <div class="field-group">
+                  <label class="field-label" for="retentionHoursInput">统计窗口</label>
+                  <div class="input-with-unit"><input id="retentionHoursInput" type="number" min="1" max="168" step="1" inputmode="numeric"><span>小时</span></div>
+                  <p class="field-help">滑动窗口内的数据参与统计，调整不会删除 Codex 原始记录。</p>
+                </div>
                 <label class="check-row check-row-muted" for="pausedCheckbox">
                   <input id="pausedCheckbox" type="checkbox">
                   <span>暂停后台远程额度读取</span>
@@ -356,17 +361,6 @@
                   <span id="restoreDisclaimerStatus" class="restore-status" role="status" aria-live="polite">当前提醒状态由本地设置控制</span>
                 </div>
                 <div id="restoreDisclaimerError" class="inline-error restore-error" role="alert" hidden></div>
-              </div>
-              <div class="cost-overview">
-                <p class="cost-intro">每次更新的成本</p>
-                <p class="cost-explanation" id="costExplanation">一次本地快照读取；远程额度读取按账户额度频率执行。本面板不发起额外 LLM 调用。</p>
-                <div class="cost-metrics">
-                  <div class="cost-metric"><span>本地读取</span><strong id="localReads">—</strong></div>
-                  <div class="cost-metric"><span>远程读取</span><strong id="remoteReads">—</strong></div>
-                  <div class="cost-metric"><span>最近本地耗时</span><strong id="lastLocalMs">—</strong></div>
-                  <div class="cost-metric"><span>每小时请求</span><strong id="requestsPerHour">—</strong></div>
-                  <div class="cost-metric"><span>LLM 调用</span><strong id="llmCalls">—</strong></div>
-                </div>
               </div>
             </div>
           </section>

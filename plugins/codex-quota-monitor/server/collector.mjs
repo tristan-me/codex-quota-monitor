@@ -21,6 +21,7 @@ export const DEFAULT_SETTINGS = {
   autoSwitch: false,
   hideDisclaimer: false,
   objective: "balanced",
+  retentionHours: 24,
 };
 const errorText = (error) => String(error?.message || error).slice(0, 250);
 const editsFor = (model, effort) => [
@@ -43,6 +44,10 @@ export function validateSettings(patch) {
       const max = key === "pollSeconds" ? 300 : 3600;
       if (!Number.isFinite(value) || value < min || value > max)
         throw new Error("Polling frequency outside supported range");
+    }
+    if (key === "retentionHours") {
+      if (!Number.isInteger(value) || value < 1 || value > 168)
+        throw new Error("Retention window outside supported range");
     }
     if (
       ["paused", "autoSwitch", "hideDisclaimer"].includes(key) &&
@@ -125,6 +130,7 @@ export class Collector {
         ...validateSettings(saved.settings || {}),
       };
       this.estimator = new Estimator(saved.estimator);
+      this.estimator.setRetentionHours(this.settings.retentionHours, Date.now());
       this.originalDefaults = saved.originalDefaults;
       this.lastApplied = saved.lastApplied;
       if (saved.resetReference) {
@@ -148,6 +154,7 @@ export class Collector {
       pending: {},
       lastTokens: {},
     });
+    this.estimator.setRetentionHours(this.settings.retentionHours, Date.now());
     await this.local();
     this.schedule();
     if (!this.settings.paused) {
@@ -178,7 +185,9 @@ export class Collector {
   async local() {
     const start = performance.now();
     try {
-      const result = this.demo ? this.demoThreads() : await this.reader.read();
+      const result = this.demo
+        ? this.demoThreads()
+        : await this.reader.read({ retentionHours: this.settings.retentionHours });
       if (!Array.isArray(result?.threads))
         throw new Error("Local reader returned no thread array");
       this.threads = result.threads;
@@ -484,6 +493,8 @@ export class Collector {
         this.lastApplied = null;
       }
       this.settings = { ...this.settings, ...patch };
+      if (Object.hasOwn(patch, "retentionHours"))
+        this.estimator.setRetentionHours(patch.retentionHours, Date.now());
       this.refreshRecommendation();
       await this.save();
       this.nextQuota = 0;
@@ -531,6 +542,7 @@ export class Collector {
   snapshot() {
     const now = Date.now();
     const state = this.estimator.state;
+    const observationSince = this.estimator.observationSince(now);
     const window = mainWindow(this.account.windows);
     const stale =
       this.account.error !== null ||
@@ -539,27 +551,52 @@ export class Collector {
         Math.max(120000, this.settings.quotaPollSeconds * 3000);
     const sessions = this.estimator
       .sessions(this.threads, now)
-      .map((session) => ({
-        ...session,
-        observationSince: state.sessionTrackingSince || state.since,
-        ...(this.settings.paused || stale
-          ? {
-              secondsPerPercent: null,
-              ownSecondsPerPercent: null,
-              latestTurnSecondsPerPercent: null,
-              children: (session.children || []).map((child) => ({
-                ...child,
-                secondsPerPercent: null,
-                latestTurnSecondsPerPercent: null,
-              })),
-            }
-          : {}),
-      }));
+      .map((session) => {
+        if (!this.settings.paused && !stale)
+          return { ...session, observationSince };
+        const ownActive = (session.ownStatus || session.status) === "active";
+        return {
+          ...session,
+          observationSince,
+          secondsPerPercent: null,
+          rateSource: null,
+          rateEstimated: false,
+          ownSecondsPerPercent: null,
+          // Completed-turn predictions use retained local evidence. Active
+          // forecasts still require a fresh account sample and are suppressed.
+          latestTurnSecondsPerPercent: ownActive
+            ? null : session.latestTurnSecondsPerPercent,
+          latestTurnRateSource: ownActive
+            ? null : session.latestTurnRateSource,
+          latestTurnRateEstimated: ownActive
+            ? false : session.latestTurnRateEstimated,
+          children: (session.children || []).map((child) => ({
+            ...child,
+            secondsPerPercent: null,
+            rateSource: null,
+            rateEstimated: false,
+            latestTurnSecondsPerPercent: child.status === "active"
+              ? null : child.latestTurnSecondsPerPercent,
+            latestTurnRateSource: child.status === "active"
+              ? null : child.latestTurnRateSource,
+            latestTurnRateEstimated: child.status === "active"
+              ? false : child.latestTurnRateEstimated,
+          })),
+        };
+      });
     const rate = sessions.reduce(
       (sum, task) =>
         sum + (task.secondsPerPercent ? 1 / task.secondsPerPercent : 0),
       0,
     );
+    const estimatedRows = sessions.filter(
+      (task) => task.totalEstimatedPercent !== null && task.totalEstimatedPercent !== undefined,
+    );
+    const rollingEstimatedPercent = estimatedRows.length
+      ? estimatedRows.reduce((sum, task) => sum + task.totalEstimatedPercent, 0)
+      : null;
+    const attribution = this.estimator.rollingAttribution(now);
+    const calibration = this.estimator.rollingCalibration(now);
     return {
       version: "0.2.0",
       dataSchema: 2,
@@ -570,15 +607,16 @@ export class Collector {
       account: { ...this.account, stale },
       sessions,
       attribution: {
-        observedPercent: state.observedPercent,
-        estimatedPercent:
-          state.calibratedTokens > 0
-            ? Object.values(state.totals).reduce((a, b) => a + b, 0)
-            : null,
-        calibrated: state.calibratedTokens > 0,
-        unattributedPercent: state.unattributedPercent,
+        observedPercent: attribution.observedPercent,
+        estimatedPercent: attribution.coverage === "none"
+          ? null : attribution.attributedPercent,
+        projectedTaskPercent: rollingEstimatedPercent,
+        estimatedPercentCoverage: attribution.coverage,
+        taskEstimateCoverage: state.rollingCoverage || "legacy-unbounded",
+        calibrated: calibration.tokens > 0 && calibration.percent > 0,
+        unattributedPercent: attribution.unattributedPercent,
         windowLabel: window?.label || "等待账户窗口",
-        since: state.since,
+        since: attribution.since,
         assumption:
           "假设账户消耗来自所监控本机；跨设备使用和模型权重差异无法精确拆分",
       },
