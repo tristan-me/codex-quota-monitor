@@ -216,7 +216,11 @@ test("legacy migration conserves evidenced totals and keeps latest share on its 
   assert.equal(initial.latestTurnEstimatedPercent, 2);
   assert.equal(e.state.totals.stale, undefined);
   assert.equal(e.state.rollingCoverage, "legacy-partial");
-  assert.equal(e.rollingAttribution(now).observedPercent, 10);
+  const attribution = e.rollingAttribution(now);
+  assert.equal(attribution.observedPercent, 0);
+  assert.equal(attribution.attributedPercent, 0);
+  assert.equal(attribution.unattributedPercent, 0);
+  assert.equal(attribution.excludedIncompleteHistory, true);
 
   e.setRetentionHours(2, now);
   const clipped = e.sessions([row], now)[0];
@@ -494,7 +498,194 @@ test("collector attribution separates confirmed observed usage from provisional 
   collector.account.lastFetchedAt = sampledAt;
   const attribution = collector.snapshot().attribution;
   assert.equal(attribution.observedPercent, 1);
+  assert.equal(attribution.attributedPercent, 1);
   assert.equal(attribution.estimatedPercent, 1);
+  assert.equal(attribution.unattributedPercent, 0);
+  assert.equal(attribution.sampleCount, 1);
   assert.ok(Math.abs(attribution.projectedTaskPercent - 1.5) < 0.01);
   assert.ok(attribution.estimatedPercent <= attribution.observedPercent);
+});
+
+const officialEvent = (id, at, percent, attributedPercent, unattributedPercent) => ({
+  id,
+  at,
+  percent,
+  attributedPercent,
+  unattributedPercent,
+  coverage: "official-quota-sample",
+});
+
+test("attribution restarts after recovered history and uses the valid official suffix", () => {
+  const validAt = now - 2 * hour;
+  const e = new Estimator({
+    rollingStartedAt: now - 4 * hour,
+    rollingQuotaEvents: [
+      {
+        id: "recovered",
+        at: now - 3 * hour,
+        percent: 123,
+        attributedPercent: 123,
+        unattributedPercent: 0,
+        coverage: "recovered-attributed-lower-bound",
+      },
+      officialEvent("valid", validAt, 2, 2, 0),
+    ],
+    rollingAllocations: [{ at: validAt, id: "a", percent: 99 }],
+  });
+  const attribution = e.rollingAttribution(now);
+  assert.deepEqual(
+    {
+      observedPercent: attribution.observedPercent,
+      attributedPercent: attribution.attributedPercent,
+      unattributedPercent: attribution.unattributedPercent,
+    },
+    { observedPercent: 2, attributedPercent: 2, unattributedPercent: 0 },
+  );
+  assert.equal(attribution.since, validAt);
+  assert.equal(attribution.coverage, "rolling");
+  assert.equal(attribution.excludedIncompleteHistory, true);
+  assert.equal(attribution.sampleCount, 1);
+});
+
+test("a valid official unattributed event is retained despite larger task allocations", () => {
+  const firstAt = now - 90 * 60 * 1000;
+  const secondAt = now - 30 * 60 * 1000;
+  const e = new Estimator({
+    rollingQuotaEvents: [
+      officialEvent("first", firstAt, 2, 2, 0),
+      officialEvent("unattributed", secondAt, 1, 0, 1),
+    ],
+    rollingAllocations: [{ at: secondAt, id: "a", percent: 99 }],
+  });
+  const attribution = e.rollingAttribution(now);
+  assert.equal(attribution.observedPercent, 3);
+  assert.equal(attribution.attributedPercent, 2);
+  assert.equal(attribution.unattributedPercent, 1);
+  assert.equal(attribution.sampleCount, 2);
+});
+
+test("an invalid middle quota event restarts the attribution suffix", () => {
+  const firstAt = now - 3 * 60 * 60 * 1000;
+  const invalidAt = now - 2 * 60 * 60 * 1000;
+  const lastAt = now - 60 * 60 * 1000;
+  const e = new Estimator({
+    rollingQuotaEvents: [
+      officialEvent("first", firstAt, 1, 1, 0),
+      officialEvent("invalid", invalidAt, 1, 1, 1),
+      officialEvent("last", lastAt, 3, 1, 2),
+    ],
+  });
+  const attribution = e.rollingAttribution(now);
+  assert.equal(attribution.observedPercent, 3);
+  assert.equal(attribution.attributedPercent, 1);
+  assert.equal(attribution.unattributedPercent, 2);
+  assert.equal(attribution.since, lastAt);
+  assert.equal(attribution.sampleCount, 1);
+  assert.equal(attribution.excludedIncompleteHistory, true);
+});
+
+test("an interval crossing the damaged boundary is excluded from the suffix", () => {
+  const invalidAt = now - 2 * 60 * 60 * 1000;
+  const crossingStart = invalidAt - 30 * 60 * 1000;
+  const crossingEnd = now - 30 * 60 * 1000;
+  const validAt = now - 10 * 60 * 1000;
+  const e = new Estimator({
+    rollingQuotaEvents: [
+      officialEvent("invalid", invalidAt, 1, 1, 1),
+      {
+        id: "crossing",
+        startAt: crossingStart,
+        endAt: crossingEnd,
+        percent: 4,
+        attributedPercent: 4,
+        unattributedPercent: 0,
+        coverage: "official-quota-sample",
+      },
+      officialEvent("valid", validAt, 2, 1, 1),
+    ],
+  });
+  const attribution = e.rollingAttribution(now);
+  assert.equal(attribution.observedPercent, 2);
+  assert.equal(attribution.attributedPercent, 1);
+  assert.equal(attribution.unattributedPercent, 1);
+  assert.equal(attribution.since, validAt);
+  assert.equal(attribution.sampleCount, 1);
+});
+
+test("an unlocatable damaged event does not suppress later timestamped samples", () => {
+  const validAt = now - 30 * 60 * 1000;
+  const e = new Estimator({
+    rollingStartedAt: now - hour,
+    rollingQuotaEvents: [
+      {
+        id: "unlocatable-damaged",
+        percent: 2,
+        attributedPercent: 2,
+        unattributedPercent: 0,
+        coverage: "official-quota-sample",
+      },
+      officialEvent("valid", validAt, 2, 2, 0),
+    ],
+  });
+  const attribution = e.rollingAttribution(now);
+  assert.equal(attribution.observedPercent, 2);
+  assert.equal(attribution.attributedPercent, 2);
+  assert.equal(attribution.unattributedPercent, 0);
+  assert.equal(attribution.since, validAt);
+  assert.equal(attribution.excludedIncompleteHistory, true);
+  assert.equal(attribution.sampleCount, 1);
+});
+
+test("expired quota samples are excluded while the retained suffix remains complete", () => {
+  const retainedAt = now - 30 * 60 * 1000;
+  const e = new Estimator({
+    retentionHours: 1,
+    rollingQuotaEvents: [
+      officialEvent("expired", now - 2 * hour, 4, 4, 0),
+      officialEvent("retained", retainedAt, 2, 1, 1),
+    ],
+  });
+  const attribution = e.rollingAttribution(now);
+  assert.equal(attribution.observedPercent, 2);
+  assert.equal(attribution.attributedPercent, 1);
+  assert.equal(attribution.unattributedPercent, 1);
+  assert.equal(attribution.since, retainedAt);
+  assert.equal(attribution.excludedIncompleteHistory, false);
+  assert.equal(attribution.sampleCount, 1);
+});
+
+test("attribution waits with numeric zeros when there are no quota samples", () => {
+  const e = new Estimator({
+    rollingAllocations: [{ at: now - 1_000, id: "a", percent: 99 }],
+  });
+  const attribution = e.rollingAttribution(now);
+  assert.equal(attribution.observedPercent, 0);
+  assert.equal(attribution.attributedPercent, 0);
+  assert.equal(attribution.unattributedPercent, 0);
+  assert.equal(attribution.coverage, "none");
+  assert.equal(attribution.sampleCount, 0);
+  assert.equal(attribution.excludedIncompleteHistory, false);
+});
+
+test("pruning cannot repair corrupt official split amounts into valid history", () => {
+  const firstAt = now - 3 * hour;
+  const badAt = now - 2 * hour;
+  const lastAt = now - hour;
+  for (const [attributed, unattributed] of [[-1, 2], [2, -1], [0, 2]]) {
+    const e = new Estimator({
+      rollingQuotaEvents: [
+        officialEvent("before", firstAt, 1, 1, 0),
+        officialEvent("bad", badAt, 1, attributed, unattributed),
+        officialEvent("after", lastAt, 2, 1, 1),
+      ],
+    });
+    e.pruneRolling(now);
+    const summary = e.rollingAttribution(now);
+    assert.equal(summary.observedPercent, 2);
+    assert.equal(summary.attributedPercent, 1);
+    assert.equal(summary.unattributedPercent, 1);
+    assert.equal(summary.since, lastAt);
+    assert.equal(summary.sampleCount, 1);
+    assert.equal(summary.excludedIncompleteHistory, true);
+  }
 });

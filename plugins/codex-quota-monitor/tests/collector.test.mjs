@@ -193,3 +193,24 @@ test("local discovery receives the same configurable retention window as the est
     await f.cleanup();
   }
 });
+
+test("snapshot exposes numeric zero attribution while waiting for a quota change", async () => {
+  const f = await fixture();
+  try {
+    f.c.probe = "unavailable";
+    const snapshot = f.c.snapshot();
+    assert.equal(snapshot.attribution.observedPercent, 0);
+    assert.equal(snapshot.attribution.attributedPercent, 0);
+    assert.equal(snapshot.attribution.estimatedPercent, 0);
+    assert.equal(snapshot.attribution.unattributedPercent, 0);
+    assert.equal(snapshot.attribution.estimatedPercentCoverage, "none");
+    assert.equal(snapshot.attribution.sampleCount, 0);
+    assert.equal(snapshot.attribution.excludedIncompleteHistory, false);
+    assert.match(
+      snapshot.diagnostics.join(" "),
+      /账户接口暂未提供每个任务的独立用量；当前按本机各任务新增 token 的比例估算额度，不同模型及其他设备的使用会影响准确性。/,
+    );
+  } finally {
+    await f.cleanup();
+  }
+});

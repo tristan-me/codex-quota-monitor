@@ -988,6 +988,18 @@ button:disabled {
   min-width: 0;
 }
 
+.session-scope-note {
+  margin: 6px 0 0;
+  color: var(--text-soft);
+  font-size: 11px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.attribution-total .attribution-status {
+  font-size: 18px;
+}
+
 .session-notes {
   flex-wrap: wrap;
   gap: 6px;

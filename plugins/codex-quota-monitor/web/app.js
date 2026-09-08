@@ -678,6 +678,7 @@
       }
       row.append(meta);
 
+      const children = Array.isArray(session.children) ? session.children.filter((child) => isRecord(child)) : [];
       const metrics = sessionTotals(session);
       const statLine = document.createElement('div');
       statLine.className = 'session-stat-line';
@@ -687,8 +688,15 @@
       statLine.append(textElement('span', 'session-stat-line-block', latestLine));
       row.append(statLine);
 
-      const children = Array.isArray(session.children) ? session.children.filter((child) => isRecord(child)) : [];
       if (children.length > 0) {
+        const ownQuota = finiteNumber(session.ownEstimatedPercent);
+        const childQuotas = children.map(child => sessionMetric(child, 'totalEstimatedPercent', 'estimatedPercent'));
+        const knownChildQuotas = childQuotas.filter(value => value !== null);
+        const childQuota = knownChildQuotas.reduce((sum, value) => sum + value, 0);
+        const childText = knownChildQuotas.length
+          ? `${formatPercent(childQuota)}${knownChildQuotas.length < children.length ? '（部分样本）' : ''}`
+          : '等待采样';
+        row.append(textElement('p', 'session-scope-note', `总额度拆分：本任务累计 ${ownQuota === null ? '等待采样' : formatPercent(ownQuota)}，子任务合计 ${childText}。并行耗时不重复累加；最近一次仅本任务本轮。`));
         const key = safeText(session.id, session.title || `root-${start + index}`);
         const matchingChildren = tokens.length ? children.filter((child) => sessionMatches(child, tokens)) : [];
         const childSearchMatch = tokens.length > 0 && matchingChildren.length > 0;
@@ -779,23 +787,25 @@
     const observed = finiteNumber(attribution.observedPercent);
     const estimated = finiteNumber(attribution.estimatedPercent);
     const unattributed = finiteNumber(attribution.unattributedPercent);
-    const partialHistory = /lower-bound/.test(safeText(attribution.estimatedPercentCoverage, ''));
-    const attributedTotal = !partialHistory && observed !== null && observed > 0 && estimated !== null
+    const incomplete = /lower-bound/.test(safeText(attribution.estimatedPercentCoverage, ''));
+    const attributedTotal = !incomplete && observed !== null && observed > 0 && estimated !== null
       ? Math.min(100, Math.max(0, (estimated / observed) * 100))
       : null;
-    setText('attributionTotal', attributedTotal === null ? '—' : formatPercent(attributedTotal), '—');
-    setText('observedPercent', observed === null ? '—' : `${partialHistory ? '≥ ' : ''}${formatPercent(observed)}`, '—');
-    setText('estimatedPercent', estimated === null ? '—' : formatPercent(estimated), '—');
-    setText('unattributedPercent', partialHistory || unattributed === null ? '—' : formatPercent(unattributed), '—');
+    const statusText = incomplete ? '等待完整记录' : observed === 0 ? '等待额度变化' : '等待采样';
+    setText('attributionTotal', attributedTotal === null ? statusText : formatPercent(attributedTotal), '等待采样');
+    $('attributionTotal')?.classList.toggle('attribution-status', attributedTotal === null);
+    setText('observedPercent', observed === null || incomplete ? '等待采样' : formatPercent(observed), '等待采样');
+    setText('estimatedPercent', estimated === null || incomplete ? '等待采样' : formatPercent(estimated), '等待采样');
+    setText('unattributedPercent', incomplete || unattributed === null ? '等待采样' : formatPercent(unattributed), '等待采样');
     updateProgressBar('observedBar', observed);
     updateProgressBar('estimatedBar', estimated);
     updateProgressBar('unattributedBar', unattributed);
     const sinceDate = parseDate(attribution.since);
     setText('attributionSince', sinceDate ? `从 ${formatDate(sinceDate)}` : safeText(attribution.since, '等待样本'), '等待样本');
     setText('attributionWindow', safeText(attribution.windowLabel, '尚未收到窗口范围。'), '尚未收到窗口范围。');
-    setText('attributionNote', partialHistory
-      ? '旧数据缺少完整时间戳，已观察仅为可恢复下限，暂不计算归因比例。任务中的 token 校准暂估会在下一次账户采样后核对。'
-      : '归因按统计窗口内的账户变化估算，可能混入其他设备消耗；任务中的 token 校准暂估会在下一次账户采样后核对。');
+    setText('attributionNote', `${attribution.excludedIncompleteHistory === true
+      ? '已跳过较早的不完整记录，以上比例和额度从标注时间起计算。'
+      : '以上比例和额度按统计窗口内的完整记录计算。'}任务总额度仍包含窗口内可用的历史估算；归因可能混入其他设备消耗。`);
   }
 
   function renderAccountWindows(snapshot) {

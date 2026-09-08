@@ -608,8 +608,8 @@ export class Collector {
       sessions,
       attribution: {
         observedPercent: attribution.observedPercent,
-        estimatedPercent: attribution.coverage === "none"
-          ? null : attribution.attributedPercent,
+        attributedPercent: attribution.attributedPercent,
+        estimatedPercent: attribution.attributedPercent,
         projectedTaskPercent: rollingEstimatedPercent,
         estimatedPercentCoverage: attribution.coverage,
         taskEstimateCoverage: state.rollingCoverage || "legacy-unbounded",
@@ -617,6 +617,9 @@ export class Collector {
         unattributedPercent: attribution.unattributedPercent,
         windowLabel: window?.label || "等待账户窗口",
         since: attribution.since,
+        excludedIncompleteHistory: attribution.excludedIncompleteHistory,
+        sampleCount: attribution.sampleCount,
+        startReason: attribution.startReason,
         assumption:
           "假设账户消耗来自所监控本机；跨设备使用和模型权重差异无法精确拆分",
       },
@@ -657,7 +660,7 @@ export class Collector {
         ...this.messages,
         ...this.diagnostics,
         ...(this.probe === "unavailable"
-          ? ["此账号逐任务 credits 暂未返回：使用低置信本机 token 占比分摊。"]
+          ? ["账户接口暂未提供每个任务的独立用量；当前按本机各任务新增 token 的比例估算额度，不同模型及其他设备的使用会影响准确性。"]
           : []),
         ...(this.probe === "available"
           ? [

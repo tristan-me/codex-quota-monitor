@@ -167,6 +167,26 @@ function clipInterval(interval, cutoff, now) {
   return clipped[1] > clipped[0] ? clipped : null;
 }
 
+function quotaEventPosition(event) {
+  const startAt = Number(event?.startAt);
+  const endAt = Number(event?.endAt);
+  if (Number.isFinite(startAt) && Number.isFinite(endAt) && endAt > startAt)
+    return { startAt, endAt };
+  if (Number.isFinite(startAt) || Number.isFinite(endAt)) {
+    const point = Number.isFinite(startAt) && Number.isFinite(endAt)
+      ? Math.max(startAt, endAt)
+      : Number.isFinite(endAt) ? endAt : startAt;
+    return { startAt: point, endAt: point };
+  }
+  const at = Number(event?.at);
+  return Number.isFinite(at) ? { startAt: at, endAt: at } : null;
+}
+
+function quotaEventWithinRetention(event, cutoff, now) {
+  const position = quotaEventPosition(event);
+  return Boolean(position && position.endAt >= cutoff && position.startAt <= now);
+}
+
 function turnIdentity(thread) {
   const evidence = thread.activityEvidence || {};
   const turnId = typeof evidence.turnId === "string" && evidence.turnId
@@ -435,30 +455,105 @@ export class Estimator {
   }
 
   rollingAttribution(now) {
-    const events = this.state.rollingQuotaEvents
-      .map((event) => this.sliceQuotaEvent(event, now))
-      .filter(Boolean);
+    const cutoff = this.cutoffAt(now);
+    const observationSince = this.observationSince(now);
+    const retainedPosition = (position) => position &&
+      position.endAt >= cutoff && position.startAt <= now;
+    const amountIsComplete = (event, sliced) => {
+      if (String(event?.coverage) !== "official-quota-sample") return false;
+      if (!Number.isFinite(event?.percent) || event.percent <= 0 ||
+          !Number.isFinite(event?.attributedPercent) || event.attributedPercent < 0 ||
+          !Number.isFinite(event?.unattributedPercent) || event.unattributedPercent < 0)
+        return false;
+      const rawTotal = event.attributedPercent + event.unattributedPercent;
+      const rawTolerance = 1e-9 * Math.max(1, Math.abs(event.percent));
+      if (Math.abs(rawTotal - event.percent) > rawTolerance || !sliced)
+        return false;
+      if (!Number.isFinite(sliced.percent) || sliced.percent <= 0 ||
+          !Number.isFinite(sliced.attributedPercent) || sliced.attributedPercent < 0 ||
+          !Number.isFinite(sliced.unattributedPercent) || sliced.unattributedPercent < 0)
+        return false;
+      const slicedTotal = sliced.attributedPercent + sliced.unattributedPercent;
+      const slicedTolerance = 1e-9 * Math.max(1, Math.abs(sliced.percent));
+      return Math.abs(slicedTotal - sliced.percent) <= slicedTolerance;
+    };
+    const ordered = this.state.rollingQuotaEvents
+      .map((event, index) => ({ event, index, position: quotaEventPosition(event) }))
+      .filter(({ position }) => !position || retainedPosition(position))
+      .sort((a, b) =>
+        (a.position?.endAt ?? -Infinity) - (b.position?.endAt ?? -Infinity) ||
+        (a.position?.startAt ?? -Infinity) - (b.position?.startAt ?? -Infinity) ||
+        a.index - b.index,
+      );
+    const events = [];
+    let excludedIncompleteHistory = false;
+    let boundary = observationSince;
+    let restartAfter = null;
+    for (const { event, position } of ordered) {
+      if (!position) {
+        // An in-window record with no usable timestamp cannot be ordered
+        // against the retained history. Treat it as an old damaged boundary,
+        // while allowing newly sampled points after the monitor start through.
+        excludedIncompleteHistory = true;
+        events.length = 0;
+        restartAfter = Math.max(observationSince, cutoff);
+        boundary = Math.max(boundary, restartAfter);
+        continue;
+      }
+      const sliced = this.sliceQuotaEvent(event, now);
+      if (!amountIsComplete(event, sliced)) {
+        // A recovered lower-bound record or malformed official sample makes all
+        // earlier records incomplete. Keep the task allocations, but restart
+        // this attribution-only scope after the bad point.
+        excludedIncompleteHistory = true;
+        events.length = 0;
+        const invalidBoundary = Math.min(now, position.endAt);
+        restartAfter = Math.max(restartAfter ?? -Infinity, invalidBoundary);
+        boundary = Math.max(boundary, invalidBoundary);
+        continue;
+      }
+      if (restartAfter !== null && position.startAt < restartAfter) continue;
+      events.push(sliced);
+    }
     const observedPercent = events.reduce((sum, event) => sum + event.percent, 0);
-    const allocatedPercent = this.state.rollingAllocations
-      .map((event) => this.sliceAllocation(event, now))
-      .filter(Boolean)
-      .reduce((sum, event) => sum + event.percent, 0);
-    const attributedPercent = Math.min(observedPercent, allocatedPercent);
-    const unattributedPercent = Math.max(0, observedPercent - attributedPercent);
-    const recovered = events.some((event) => String(event.coverage).includes("lower-bound"));
-    const exact = events.some((event) => !String(event.coverage).includes("lower-bound"));
+    let attributedPercent = events.reduce(
+      (sum, event) => sum + event.attributedPercent,
+      0,
+    );
+    let unattributedPercent = events.reduce(
+      (sum, event) => sum + event.unattributedPercent,
+      0,
+    );
+    // Preserve each event's values while removing harmless floating-point
+    // residue so the three reported amounts always reconcile exactly.
+    const residual = observedPercent - attributedPercent - unattributedPercent;
+    const tolerance = 1e-9 * Math.max(1, Math.abs(observedPercent));
+    if (Number.isFinite(residual) && Math.abs(residual) <= tolerance) {
+      if (unattributedPercent + residual >= 0) unattributedPercent += residual;
+      else if (attributedPercent + residual >= 0) {
+        // This branch only handles a tiny negative residue against a zero
+        // unattributed amount; keep the nonnegative invariant intact.
+        attributedPercent += residual;
+      }
+    }
+    const since = events.length
+      ? Math.min(...events.map((event) =>
+        Number.isFinite(event.startAt) ? event.startAt : event.at,
+      ))
+      : boundary;
     return {
       observedPercent,
       attributedPercent,
       unattributedPercent,
-      since: events.length
-        ? Math.min(...events.map((event) => Number.isFinite(event.startAt) ? event.startAt : event.at))
-        : this.observationSince(now),
-      coverage: recovered && exact
-        ? "partial-lower-bound"
-        : recovered
-          ? "legacy-lower-bound"
-          : exact ? "rolling" : "none",
+      since,
+      coverage: events.length ? "rolling" : "none",
+      excludedIncompleteHistory,
+      sampleCount: events.length,
+      startReason: events.length
+        ? excludedIncompleteHistory ? "after-incomplete-history" : "official-samples"
+        : excludedIncompleteHistory
+          ? "waiting-after-incomplete-history"
+          : "waiting-for-quota-change",
     };
   }
 
@@ -554,8 +649,28 @@ export class Estimator {
       }))
       .filter((event) => event.endAt > event.startAt);
     s.rollingQuotaEvents = s.rollingQuotaEvents
-      .map((event) => this.sliceQuotaEvent(event, now))
-      .filter(Boolean);
+      .flatMap((event) => {
+        // Do not normalize corrupt split amounts into an apparently complete
+        // official sample before rollingAttribution can see the bad boundary.
+        const rawSplit = event?.attributedPercent + event?.unattributedPercent;
+        const invalidOfficial = event?.coverage === "official-quota-sample" && (
+          !Number.isFinite(event.percent) || event.percent <= 0 ||
+          !Number.isFinite(event.attributedPercent) || event.attributedPercent < 0 ||
+          !Number.isFinite(event.unattributedPercent) || event.unattributedPercent < 0 ||
+          Math.abs(rawSplit - event.percent) > 1e-9 * Math.max(1, Math.abs(event.percent))
+        );
+        if (invalidOfficial) return quotaEventWithinRetention(event, cutoff, now) ||
+          !quotaEventPosition(event) ? [event] : [];
+        const sliced = this.sliceQuotaEvent(event, now);
+        if (sliced) return [sliced];
+        // Retain an in-window malformed record as an attribution boundary.
+        // It must not affect task ledgers, but dropping it here would let an
+        // earlier valid suffix look complete after the next prune.
+        return quotaEventWithinRetention(event, cutoff, now) ||
+            !quotaEventPosition(event)
+          ? [event]
+          : [];
+      });
     s.groupObservationSeconds = {};
     for (const [id, record] of Object.entries(s.latestTurns)) {
       const lastEvidence = [

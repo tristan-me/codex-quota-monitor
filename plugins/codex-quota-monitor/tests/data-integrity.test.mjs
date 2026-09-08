@@ -131,7 +131,7 @@ test("failed quota reads mark a gap and stop stale reset predictions", async () 
   try {
     await c.remote();
     assert.equal(c.snapshot().account.summary.remainingPercent, 84);
-    assert.equal(c.snapshot().attribution.estimatedPercent, null);
+    assert.equal(c.snapshot().attribution.estimatedPercent, 0);
     failing = true;
     await c.remote();
     assert.equal(c.estimator.state.gap, true);
