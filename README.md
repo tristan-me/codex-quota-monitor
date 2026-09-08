@@ -4,6 +4,18 @@ Codex Quota Monitor 是一个本地运行的 v0.2.0 beta 插件，用来观察 C
 
 [English README](./README.en.md) · [诊断指南](./docs/diagnosis.md)
 
+## 界面预览
+
+以下截图中的账户、会话和消耗速率均为合成示例；重置公告与第三方预测是截图时的公开参考数据，不代表当前预测。
+
+![账户与会话总览（演示数据）](docs/images/overview.jpg)
+
+| 会话检索与子会话 | 模型档位总览 |
+| --- | --- |
+| [![会话检索与子会话（演示数据）](docs/images/sessions.jpg)](docs/images/sessions.jpg) | [![模型档位总览（演示数据）](docs/images/models.jpg)](docs/images/models.jpg) |
+
+![全局重置完成公告与第三方预测证据（公开参考）](docs/images/resets.jpg)
+
 ## 当前版本能做什么
 
 - 通过本机 SQLite 元数据只读发现会话，兼容新的 paginated 路径和 legacy 路径；不会写入 Codex 数据库。
@@ -25,13 +37,17 @@ Codex Quota Monitor 是一个本地运行的 v0.2.0 beta 插件，用来观察 C
 
 “模式总览”包含 Codex Radar DeepSWE 同基准费用与耗时的带日期参考快照。优先展示本机同模型档位的近期估算，缺少本机数据时，只有存在可比本机样本才用参考成本/小时倍率推算。API 等效美元成本不等于订阅百分比；Spark 的独立额度池不会从主 Codex 窗口推算。参考数据不会每 5 秒请求网站。
 
+每页展示一种模型，可用下拉框或上一/下一模型切换。桌面视图按 `ultra / max`、`xhigh / high`、`medium / low` 三行两列排列；同来源的档位说明合并显示在卡片上方。
+
 ## 成本与准确性边界
 
 界面每 5 秒读取一次本地缓存，默认约 720 次/小时；服务运行时账户额度默认每 30 秒读取一次，约 120 次/小时。模型列表和逐任务能力探测各每小时一次；失败后最短一分钟重试。面板计数是 RPC 调用次数，底层认证或重试可能产生更多 HTTP 请求。刷新本身不调用模型，但本地 HTTP、SQLite、CPU 和网络请求仍有成本；开启工具的原始 Codex 会话仍会按照正常方式消耗 token 和订阅额度。
 
+Codex Reset 的公开时间线与预测接口每 15 分钟各读取一次，约 8 次公开 GET/小时；暂停后台读取时也会暂停这两项请求。请求不包含本地账户或会话数据，失败不会影响官方额度读取。
+
 账户窗口是账户级数据。每会话数据属于估算，并且只覆盖监控开始之后的样本，不是会话生涯统计。当前 `threadUsage=null` 时，插件只能按照本机 token 增量比例分摊账户变化；不同模型的真实权重未知，其他设备、后台任务或未被发现的线程也可能污染账户窗口，所以这类结果会标为低置信度。账户窗口发生变化而本机没有可匹配 token 增量时，差额会留在 `unattributed`，不会强行分配给某个会话。服务离线期间的账户变化也归入未归因项；同一窗口内重启保留已记录累计值。
 
-重置时间使用账户窗口提供的倒计时。耗尽时间是根据最近观察速度做的线性预估；突发赠送、人工调整或其他未知重置不会被提前知道，也不会被伪装成确定事件。
+个人窗口的重置倒计时直接来自账户接口；耗尽时间是根据观测速度做的估算。全局重置记录和突发预测单独展示：明确标注公告时间、证据链接、第三方概率及数据更新时间。没有未来官方窗口时，参考观察窗仅按历史时段规则生成，不承诺会在该时段重置。
 
 ## 与原生 Codex UI 的边界
 
@@ -39,7 +55,7 @@ Codex Quota Monitor 是一个本地运行的 v0.2.0 beta 插件，用来观察 C
 
 当前没有官方挂载接口可以保证在每次打开原生 Codex 窗口时弹出自定义弹窗，也没有官方接口可以把“已处理 xx 分钟 xx 秒、实时速率、已消耗额度”嵌入原生 Codex 文本。因此 v0.2.0 beta 提供独立/compact 面板来承载免责声明和指标，不宣称已经完成这些原生 UI 要求。
 
-自动切换模式是可选的，必须由用户在界面中明确开启。启用后只写入默认 `model` 和 `model_reasoning_effort`，作用于下一次新任务；不会接管已经运行的任务，也不会宣称它一定是性价比最高或官方最优方案。Codex Radar 和 Codex Reset 仅作为产品参考入口：<https://codexradar.com/#model-ratings>、<https://codex-reset.com/zh/>。
+自动切换模式是可选的，必须由用户在界面中明确开启。启用后只写入默认 `model` 和 `model_reasoning_effort`，作用于下一次新任务；不会接管已经运行的任务，也不会宣称它一定是性价比最高或官方最优方案。外部参考来源：[Codex Radar](https://codexradar.com/#model-ratings)、[Codex Reset](https://codex-reset.com/zh/)。
 
 插件不拦截 composer 输入、不代替用户提交 turn，也不承诺修复 `failed to submit turn input: EmptyInput`。遇到该错误请先按[诊断指南](./docs/diagnosis.md)区分宿主 Codex、CLI/App Server 和本地面板的问题。
 

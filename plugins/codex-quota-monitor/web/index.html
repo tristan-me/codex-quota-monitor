@@ -6,8 +6,8 @@
     <meta name="color-scheme" content="dark">
     <meta name="description" content="Codex 会话额度和速率的本地估算仪表板">
     <title>Codex 额度监控器</title>
-    <link rel="stylesheet" href="./style.css">
-    <script defer src="./app.js"></script>
+    <link rel="stylesheet" href="/style.css">
+    <script defer src="/app.js"></script>
   </head>
   <body>
     <a class="skip-link" href="#main">跳到主要内容</a>
@@ -218,6 +218,18 @@
               <span id="modelOverviewUpdated" class="recommendation-badge">等待数据</span>
             </div>
             <p id="modelOverviewNote" class="panel-note">模型速率只用于横向参考，不把 API 美元成本换算成订阅百分比。</p>
+            <div class="model-overview-nav" aria-label="模型分页">
+              <button id="modelPrev" class="button button-small button-quiet" type="button">上一模型</button>
+              <label class="model-select-label" for="modelSelect">选择模型</label>
+              <select id="modelSelect" class="select-control model-select"></select>
+              <button id="modelNext" class="button button-small button-quiet" type="button">下一模型</button>
+              <span id="modelPageInfo" class="model-page-info">—</span>
+            </div>
+            <div class="model-overview-model-heading">
+              <h3 id="modelOverviewModelName">等待模型数据</h3>
+              <span id="modelOverviewModelId" class="model-overview-id">—</span>
+            </div>
+            <p id="modelOverviewBasis" class="model-overview-basis">来源说明等待数据。</p>
             <div id="modelOverviewList" class="model-overview-list" role="list" aria-label="模型速率总览"></div>
             <div class="model-overview-footer">
               <span id="modelOverviewSource">来源：等待数据</span>
@@ -250,7 +262,7 @@
             </details>
           </section>
 
-          <section id="resetSection" class="panel reset-panel" aria-labelledby="reset-title">
+          <section id="resetSection" class="panel reset-panel panel-wide" aria-labelledby="reset-title">
             <div class="panel-header">
               <div>
                 <p class="section-kicker">RESET RADAR</p>
@@ -275,11 +287,43 @@
                 <small>官方未提供可预测信号</small>
               </div>
             </div>
+            <div class="reset-radar-secondary">
+              <article id="confirmedGlobalResets" class="reset-radar-card">
+                <div class="reset-radar-card-header">
+                  <div>
+                    <p class="section-kicker">GLOBAL RESET HISTORY</p>
+                    <h3>最近 2 次官方重置完成公告</h3>
+                  </div>
+                  <span id="confirmedGlobalUpdated" class="panel-header-meta">等待数据</span>
+                </div>
+                <div id="confirmedGlobalResetList" class="confirmed-reset-list" role="list"></div>
+              </article>
+              <article id="thirdPartyForecast" class="reset-radar-card">
+                <div class="reset-radar-card-header">
+                  <div>
+                    <p class="section-kicker">THIRD-PARTY SIGNAL</p>
+                    <h3>第三方突发重置预测</h3>
+                  </div>
+                  <span id="forecastUpdated" class="recommendation-badge">非官方 · 等待数据</span>
+                </div>
+                <div class="forecast-probabilities">
+                  <div><span>未来 24 小时</span><strong id="forecastProbability24h">—</strong></div>
+                  <div><span>未来 48 小时</span><strong id="forecastProbability48h">—</strong></div>
+                  <div><span>置信度</span><strong id="forecastConfidence">—</strong></div>
+                </div>
+                <p id="forecastState" class="forecast-state">尚无第三方预测</p>
+                <p id="forecastWindow" class="forecast-window">参考观察窗：未宣布</p>
+                <p id="forecastCalculation" class="forecast-calculation">算法摘要：等待数据</p>
+                <p id="forecastReason" class="muted-copy">预测不承诺一定发生，也不代表官方信号。</p>
+                <div id="forecastEvidence" class="forecast-evidence"></div>
+              </article>
+            </div>
             <div class="reference-links" aria-label="外部参考">
               <a href="https://codex-reset.com/zh/" target="_blank" rel="noopener noreferrer">Codex Reset ↗</a>
               <a href="https://codexradar.com/#model-ratings" target="_blank" rel="noopener noreferrer">Codex Radar ↗</a>
             </div>
             <p class="reset-note">官方重置来自额度接口；本机耗尽估计只反映当前监控样本，不能推断官方重置时间。</p>
+            <p id="resetRadarNotes" class="reset-note">观察窗口和第三方概率仅供参考，不承诺一定发生。</p>
           </section>
 
           <section id="settings" class="panel settings-panel panel-wide" aria-labelledby="settings-title">

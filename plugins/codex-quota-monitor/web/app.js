@@ -5,6 +5,7 @@
   const API_SETTINGS = '/api/settings';
   const DISCLAIMER_KEY = 'codexQuotaMonitor.disclaimerDismissed';
   const OBJECTIVES = new Set(['economy', 'balanced', 'quality']);
+  const EFFORT_ORDER = ['ultra', 'max', 'xhigh', 'high', 'medium', 'low'];
   const SVG_NS = 'http://www.w3.org/2000/svg';
 
   const state = {
@@ -27,6 +28,9 @@
     sessionPageSize: 5,
     expandedSessionIds: new Set(),
     sessionAutoCollapsedIds: new Set(),
+    modelPage: 0,
+    modelSelectedId: null,
+    resetEvidenceExpanded: new Set(),
     resetBaseSeconds: null,
     resetBaseAt: null,
     resetScheduledAt: null,
@@ -289,6 +293,7 @@
   }
 
   function freshness(value, stale = false) {
+    if (state.mode === 'demo') return {label:'演示样本',className:'freshness-demo'};
     const date = parseDate(value);
     if (stale) {
       return { label: date ? `旧样本 · ${formatBeijingDateTime(date)}` : '旧样本 · 服务报告已过期', className: 'freshness-stale' };
@@ -949,46 +954,102 @@
   function renderModelOverview(snapshot) {
     const overview = isRecord(snapshot) && isRecord(snapshot.modelOverview) ? snapshot.modelOverview : {};
     const list = $('modelOverviewList');
+    const rawRows = Array.isArray(overview.rows) ? overview.rows.filter((row) => isRecord(row)) : [];
+    const groupsById = new Map();
+    rawRows.forEach((row) => {
+      const model = safeText(row.model, '');
+      if (!model) return;
+      const sourceKind = safeText(row.sourceKind, '').toLowerCase();
+      const sourceLabel = safeText(row.sourceLabel, '');
+      const meaningfulSource = sourceKind && !['unknown', 'unavailable', 'unsupported'].includes(sourceKind);
+      const hasReference = row.available === true
+        || finiteNumber(row.secondsPerPercent) !== null
+        || finiteNumber(row.quotaPercentPerHour) !== null
+        || finiteNumber(row.referenceCostPerHour) !== null
+        || Boolean(sourceLabel && sourceLabel !== '—')
+        || meaningfulSource;
+      if (!hasReference) return;
+      const group = groupsById.get(model) || { id: model, displayName: safeText(row.displayName, model), rows: [] };
+      group.rows.push(row);
+      if (!group.displayName || group.displayName === group.id) group.displayName = safeText(row.displayName, group.id);
+      groupsById.set(model, group);
+    });
+    const groups = [...groupsById.values()];
+    const effortRank = (row) => {
+      const effort = safeText(row.effort || row.reasoningEffort, '').toLowerCase();
+      const index = EFFORT_ORDER.indexOf(effort);
+      return index < 0 ? EFFORT_ORDER.length : index;
+    };
+    groups.forEach((group) => {
+      const byEffort = new Map();
+      group.rows.sort((a, b) => effortRank(a) - effortRank(b)).forEach((row) => {
+        const effort = safeText(row.effort || row.reasoningEffort, '—');
+        if (!byEffort.has(effort)) byEffort.set(effort, row);
+      });
+      group.rows = [...byEffort.values()];
+    });
+    if (state.modelSelectedId && groups.some((group) => group.id === state.modelSelectedId)) {
+      state.modelPage = groups.findIndex((group) => group.id === state.modelSelectedId);
+    } else {
+      state.modelPage = Math.min(Math.max(0, state.modelPage), Math.max(0, groups.length - 1));
+      state.modelSelectedId = groups[state.modelPage]?.id || null;
+    }
+    const activeGroup = groups[state.modelPage] || null;
+    const select = $('modelSelect');
+    if (select) {
+      select.replaceChildren();
+      groups.forEach((group) => {
+        const option = document.createElement('option');
+        option.value = group.id;
+        option.textContent = group.displayName === group.id ? group.id : `${group.displayName} · ${group.id}`;
+        select.append(option);
+      });
+      select.value = activeGroup ? activeGroup.id : '';
+    }
+    const prev = $('modelPrev');
+    const next = $('modelNext');
+    const pageInfo = $('modelPageInfo');
+    if (prev) prev.disabled = groups.length === 0 || state.modelPage <= 0;
+    if (next) next.disabled = groups.length === 0 || state.modelPage >= groups.length - 1;
+    setText('modelPageInfo', groups.length === 0 ? '无模型数据' : `${state.modelPage + 1} / ${groups.length}`, '无模型数据');
+    setText('modelOverviewModelName', activeGroup ? activeGroup.displayName : '等待模型数据', '等待模型数据');
+    setText('modelOverviewModelId', activeGroup ? activeGroup.id : '—', '—');
     if (list) {
       list.replaceChildren();
-      const rows = Array.isArray(overview.rows) ? overview.rows.filter((row) => isRecord(row)) : [];
-      if (rows.length === 0) {
+      if (!activeGroup) {
         list.append(textElement('div', 'empty-state model-overview-empty', '暂无模型速率数据 · 等待账户和观测样本'));
       } else {
-        rows.forEach((row) => {
+        const sourceGroups = new Map();
+        activeGroup.rows.forEach((row) => {
+          const effort = safeText(row.effort || row.reasoningEffort, '—');
+          const kind = safeText(row.sourceKind, '').toLowerCase();
+          const sourceLabel = safeText(row.sourceLabel, '来源待定');
+          const basis = safeText(row.rateBasis, '');
+          let phrase = sourceLabel;
+          if (!phrase || phrase === '来源待定') phrase = kind.includes('radar') || kind.includes('reference') ? 'Codex Radar参考推算' : kind.includes('local') || kind.includes('observ') ? '本机观测估算' : '来源待定';
+          if (basis && basis !== phrase) phrase = `${phrase}（${basis}）`;
+          const key = phrase;
+          const record = sourceGroups.get(key) || { phrase, efforts: [] };
+          record.efforts.push(effort);
+          sourceGroups.set(key, record);
+        });
+        const basisText = [...sourceGroups.values()].map((record) => `${record.efforts.join('/')}：${record.phrase}`).join('；');
+        setText('modelOverviewBasis', basisText || '来源说明等待数据。', '来源说明等待数据。');
+        activeGroup.rows.forEach((row) => {
           const item = document.createElement('article');
           item.className = 'model-overview-row';
           item.setAttribute('role', 'listitem');
+          const effort = safeText(row.effort || row.reasoningEffort, '—');
           const header = document.createElement('div');
           header.className = 'model-overview-header';
-          const titleBlock = document.createElement('div');
-          titleBlock.className = 'model-overview-title-block';
-          const model = safeText(row.model, '—');
-          const displayName = safeText(row.displayName, model);
-          const title = textElement('h3', 'model-overview-title', displayName);
-          title.title = `${displayName}${model && model !== displayName ? ` · ${model}` : ''}`;
-          titleBlock.append(title);
-          if (model !== displayName) {
-            const modelId = textElement('span', 'model-overview-id', model);
-            modelId.title = model;
-            titleBlock.append(modelId);
-          }
-          header.append(titleBlock);
-          header.append(textElement('span', `status-chip ${row.available === true ? 'status-running' : 'status-unknown'}`, row.available === true ? '可用' : row.available === false ? '未确认' : '—'));
+          header.append(textElement('span', 'effort-chip', effort));
           item.append(header);
           const metrics = document.createElement('div');
           metrics.className = 'model-overview-metrics';
-          const effort = safeText(row.effort || row.reasoningEffort, '—');
           const seconds = finiteNumber(row.secondsPerPercent);
           const quotaPerHour = finiteNumber(row.quotaPercentPerHour);
           const referenceCost = finiteNumber(row.referenceCostPerHour);
-          const metricValues = [
-            ['推理强度', effort],
-            ['速度', seconds === null || seconds <= 0 ? '—' : `${formatDuration(seconds, '—')}/1%`],
-            ['额度速率', quotaPerHour === null ? '—' : `${quotaPerHour.toFixed(3)}%/时`],
-            ['API参考成本', referenceCost === null ? '—' : `$${referenceCost.toFixed(2)}/时`],
-          ];
-          metricValues.forEach(([label, value]) => {
+          [['每1%时间', seconds === null || seconds <= 0 ? '—' : formatDuration(seconds, '—')], ['额度速率', quotaPerHour === null ? '—' : `${quotaPerHour.toFixed(3)}%/时`], ['参考成本', referenceCost === null ? '—' : `$${referenceCost.toFixed(2)}/时`]].forEach(([label, value]) => {
             const metric = document.createElement('div');
             metric.className = 'model-overview-metric';
             metric.append(textElement('span', '', label));
@@ -996,18 +1057,11 @@
             metrics.append(metric);
           });
           item.append(metrics);
-          const sourceLine = document.createElement('p');
-          sourceLine.className = 'model-overview-source';
-          const sourceKind = safeText(row.sourceKind, '—');
-          const sourceLabel = safeText(row.sourceLabel, '来源待定');
-          const basis = safeText(row.rateBasis, '速率样本待定');
-          sourceLine.textContent = `${sourceLabel} · ${basis}`;
-          sourceLine.title = sourceLine.textContent;
-          item.append(sourceLine);
           list.append(item);
         });
       }
     }
+    if (!activeGroup) setText('modelOverviewBasis', '来源说明等待数据。', '来源说明等待数据。');
     const updated = parseDate(overview.updatedAt);
     setText('modelOverviewUpdated', updated ? `更新于 ${formatDate(updated)}` : '等待数据', '等待数据');
     setText('modelOverviewNote', safeText(overview.note, '模型速率只用于横向参考，不把 API 美元成本换算成订阅百分比。'), '模型速率只用于横向参考，不把 API 美元成本换算成订阅百分比。');
@@ -1068,7 +1122,8 @@
     const settings = getSettings(snapshot);
     const remoteText = finiteNumber(cost.remoteReads) === null ? '远程额度读取按账户额度频率执行' : `已记录 ${countValue(cost.remoteReads)} 次远程额度读取`;
     const llmText = llmCalls === null ? 'LLM 调用等待统计' : `本面板记录 ${Math.max(0, Math.round(llmCalls))} 次 LLM 调用`;
-    setText('costExplanation', `每次本地更新通常是 1 次 GET /api/snapshot（约 ${settings.pollSeconds} 秒一次）；${remoteText}（当前 ${settings.quotaPollSeconds} 秒间隔）。${llmText}。归因可能使用本机 token 占比假设分摊；可能混入其他设备消耗，不能当作官方拆账。`, '等待成本统计');
+    const resetCost = finiteNumber(cost.resetRadarRefreshSeconds) ? `公开重置资料每 ${Math.round(cost.resetRadarRefreshSeconds / 60)} 分钟读取一次时间线和预测，累计 ${countValue(cost.resetRadarRequests)} 次网站请求。` : '';
+    setText('costExplanation', `每次本地更新通常是 1 次 GET /api/snapshot（约 ${settings.pollSeconds} 秒一次）；${remoteText}（当前 ${settings.quotaPollSeconds} 秒间隔）。${llmText}。${resetCost}归因可能使用本机 token 占比假设分摊；可能混入其他设备消耗，不能当作官方拆账。`, '等待成本统计');
   }
 
   function renderReset(snapshot) {
@@ -1103,6 +1158,151 @@
     setText('exhaustionAt', exhaustionDate ? formatDate(exhaustionDate) : '当前速率尚无可用估计', '当前速率尚无可用估计');
     const unexpected = safeText(reset.unexpected, 'unknown').toLowerCase();
     setText('unexpectedReset', !unexpected || unexpected === 'unknown' ? '未知' : safeText(reset.unexpected), '未知');
+  }
+
+  function renderResetRadar(snapshot) {
+    const radar = isRecord(snapshot) && isRecord(snapshot.resetRadar) ? snapshot.resetRadar : {};
+    const list = $('confirmedGlobalResetList');
+    const evidenceKey = (scope, parent, entry, index) => {
+      const parentKey = safeText(parent.id, `${safeText(parent.title, 'item')}|${safeText(parent.announcementAt || parent.eventAt, '')}`);
+      const entryKey = safeText(entry.url, `${safeText(entry.author, '')}|${safeText(entry.publishedAt, '')}|${safeText(entry.label, '')}|${index}`);
+      return `${scope}|${parentKey}|${entryKey}`;
+    };
+    const persistentDetails = (key, summaryText) => {
+      const details = document.createElement('details');
+      const summary = document.createElement('summary');
+      summary.textContent = summaryText;
+      details.append(summary);
+      details.addEventListener('toggle', () => {
+        if (details.open) state.resetEvidenceExpanded.add(key);
+        else state.resetEvidenceExpanded.delete(key);
+      });
+      details.open = state.resetEvidenceExpanded.has(key);
+      return details;
+    };
+    const confirmed = Array.isArray(radar.confirmed) ? radar.confirmed.filter((item) => isRecord(item)) : [];
+    const ordered = confirmed.slice().sort((a, b) => {
+      const aTime = parseDate(a.announcementAt || a.eventAt)?.getTime() || 0;
+      const bTime = parseDate(b.announcementAt || b.eventAt)?.getTime() || 0;
+      return bTime - aTime;
+    }).slice(0, 2);
+    setText('confirmedGlobalUpdated', radar.updatedAt ? `更新于 ${formatBeijingDateTime(radar.updatedAt)}` : '等待数据', '等待数据');
+    if (list) {
+      list.replaceChildren();
+      if (ordered.length === 0) {
+        list.append(textElement('div', 'empty-state', '暂无官方全局重置完成公告'));
+      } else {
+        ordered.forEach((item) => {
+          const card = document.createElement('article');
+          card.className = 'confirmed-reset-item';
+          card.setAttribute('role', 'listitem');
+          const title = safeText(item.title, '官方全局重置完成公告');
+          const titleNode = textElement('strong', '', title);
+          titleNode.title = title;
+          card.append(titleNode);
+          const precision = ({'announcement-only':'公告时间','date-only':'仅精确到日期','effective':'已公布生效时间','observed':'观察记录时间'})[item.timePrecision] || safeText(item.timePrecision, '未说明');
+          const announcement = item.announcementAt ? `公告时间：${formatBeijingDateTime(item.announcementAt)}` : '公告时间：未提供';
+          const event = item.eventAt ? `已确认事件：${formatBeijingDateTime(item.eventAt)}` : '未提供逐账户到账时刻';
+          card.append(textElement('span', '', `${announcement} · ${event}`));
+          card.append(textElement('small', '', `时间精度：${precision}`));
+          const reason = safeText(item.reason, '原因未提供');
+          card.append(textElement('small', '', `原因：${reason}`));
+          const evidence = Array.isArray(item.evidence) ? item.evidence.filter((entry) => isRecord(entry)) : [];
+          evidence.forEach((entry, index) => {
+            const details = persistentDetails(
+              evidenceKey('confirmed', item, entry, index),
+              `证据 ${index + 1} · ${safeText(entry.author, '作者未提供')} · ${entry.publishedAt ? formatBeijingDateTime(entry.publishedAt) : '发布时间未提供'}`,
+            );
+            const excerpt = safeText(entry.excerpt || entry.summary || entry.detail, '证据摘要未提供');
+            details.append(textElement('p', '', excerpt));
+            const url = safeText(entry.url, '');
+            try {
+              const parsed = new URL(url);
+              if (parsed.protocol === 'https:' || parsed.protocol === 'http:') {
+                const link = document.createElement('a');
+                link.href = parsed.href;
+                link.target = '_blank';
+                link.rel = 'noopener noreferrer';
+                link.textContent = '打开证据链接 ↗';
+                details.append(link);
+              }
+            } catch (_error) {
+              // Ignore non-web evidence URLs.
+            }
+            card.append(details);
+          });
+          list.append(card);
+        });
+      }
+    }
+
+    const forecast = isRecord(radar.forecast) ? radar.forecast : {};
+    const probabilityText = (value) => {
+      const number = finiteNumber(value);
+      return number === null ? '—' : `${(Math.min(1, Math.max(0, number)) * 100).toFixed(1)}%`;
+    };
+    setText('forecastProbability24h', finiteNumber(forecast.probability24hPercent) === null ? probabilityText(forecast.probability24h) : `${forecast.probability24hPercent}%`, '—');
+    setText('forecastProbability48h', finiteNumber(forecast.probability48hPercent) === null ? probabilityText(forecast.probability48h) : `${forecast.probability48hPercent}%`, '—');
+    setText('forecastConfidence', ({low:'低',medium:'中',high:'高',unknown:'—'})[forecast.confidence] || safeText(forecast.confidence, '—'), '—');
+    const stateLabel = ({experimental:'暂无新的官方预告 · 实验模型','no-official-window':'暂无官方时间窗口','official-window':'已收录官方预告窗口'})[forecast.state] || safeText(forecast.state, '未宣布');
+    setText('forecastState', `第三方参考状态：${stateLabel}`, '第三方参考状态：未宣布');
+    const start = forecast.windowStart ? formatBeijingDateTime(forecast.windowStart) : null;
+    const end = forecast.windowEnd ? formatBeijingDateTime(forecast.windowEnd) : null;
+    const windowLabel = forecast.officialWindow ? '站点收录的官方预告窗口' : '参考观察窗';
+    setText('forecastWindow', start || end ? `${windowLabel}：${start || '起点未说明'} 至 ${end || '终点未说明'}` : '参考观察窗：未宣布', '参考观察窗：未宣布');
+    setText('forecastCalculation', `${safeText(forecast.timeBasis, '')} ${safeText(forecast.calculation, '暂无算法摘要')}`, '暂无计算依据');
+    setText('forecastReason', `${safeText(forecast.reason, '暂无第三方理由')} · 不承诺一定发生，也不代表官方信号。`, '预测不承诺一定发生，也不代表官方信号。');
+    const forecastCard = $('thirdPartyForecast');
+    const expires = parseDate(forecast.expiresAt);
+    const forecastExpired = forecast.stale === true || Boolean(expires && expires.getTime() <= Date.now());
+    if (forecastCard) forecastCard.classList.toggle('forecast-stale', forecastExpired);
+    const forecastUpdated = forecast.updatedAt || radar.updatedAt;
+    setText('forecastUpdated', forecastExpired ? '非官方 · 已过期' : forecastUpdated ? `非官方 · 更新于 ${formatBeijingDateTime(forecastUpdated)}` : '非官方 · 等待数据', '非官方 · 等待数据');
+    const evidenceContainer = $('forecastEvidence');
+    if (evidenceContainer) {
+      evidenceContainer.replaceChildren();
+      const methodology = safeText(radar.methodologyUrl, '');
+      const source = safeText(radar.sourceUrl, '');
+      [methodology ? ['方法说明', methodology] : null, source ? ['来源', source] : null].filter(Boolean).forEach(([label, url]) => {
+        try {
+          const parsed = new URL(url);
+          if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return;
+          const link = document.createElement('a');
+          link.href = parsed.href;
+          link.target = '_blank';
+          link.rel = 'noopener noreferrer';
+          link.textContent = `${label} ↗`;
+          evidenceContainer.append(link);
+        } catch (_error) {
+          // Ignore non-web links.
+        }
+      });
+      const evidence = Array.isArray(forecast.evidence) ? forecast.evidence.filter((entry) => isRecord(entry)) : [];
+      evidence.forEach((entry, index) => {
+        const details = persistentDetails(
+          evidenceKey('forecast', forecast, entry, index),
+          entry.author ? `预测依据 ${index + 1} · ${entry.author}${entry.publishedAt ? ` · ${formatBeijingDateTime(entry.publishedAt)}` : ''}` : `预测依据 ${index + 1} · ${safeText(entry.label, '历史统计')}`,
+        );
+        details.append(textElement('p', '', safeText(entry.excerpt || entry.summary || entry.detail, '证据摘要未提供')));
+        try {
+          const parsed = new URL(safeText(entry.url, ''));
+          if (parsed.protocol === 'https:' || parsed.protocol === 'http:') {
+            const link = document.createElement('a');
+            link.href = parsed.href;
+            link.target = '_blank';
+            link.rel = 'noopener noreferrer';
+            link.textContent = '打开证据链接 ↗';
+            details.append(link);
+          }
+        } catch (_error) {
+          // Ignore non-web links.
+        }
+        evidenceContainer.append(details);
+      });
+    }
+    const notes = Array.isArray(radar.notes) ? radar.notes.filter((note) => typeof note === 'string' && note.trim()) : [];
+    if (radar.fetchError) notes.unshift('来源刷新失败：显示最后可用资料');
+    setText('resetRadarNotes', notes.length ? notes.join(' · ') : '观察窗口和第三方概率仅供参考，不承诺一定发生。', '观察窗口和第三方概率仅供参考，不承诺一定发生。');
   }
 
   function renderDiagnostics(snapshot) {
@@ -1185,6 +1385,7 @@
     renderRecommendation(safeSnapshot);
     renderCost(safeSnapshot);
     renderReset(safeSnapshot);
+    renderResetRadar(safeSnapshot);
     renderDiagnostics(safeSnapshot);
     renderSettings(safeSnapshot);
     setText('footerUpdatedAt', formatUpdated(state.lastUpdatedAt || safeSnapshot.now), '尚未同步');
@@ -1411,6 +1612,24 @@
     if (autoSwitch) autoSwitch.addEventListener('change', () => queueSettingsPatch({ autoSwitch: autoSwitch.checked }));
     const restore = $('restoreDefaultsBtn');
     if (restore) restore.addEventListener('click', () => restoreDefaults());
+
+    const modelPrev = $('modelPrev');
+    if (modelPrev) modelPrev.addEventListener('click', () => {
+      state.modelPage = Math.max(0, state.modelPage - 1);
+      state.modelSelectedId = null;
+      renderModelOverview(state.snapshot || {});
+    });
+    const modelNext = $('modelNext');
+    if (modelNext) modelNext.addEventListener('click', () => {
+      state.modelPage += 1;
+      state.modelSelectedId = null;
+      renderModelOverview(state.snapshot || {});
+    });
+    const modelSelect = $('modelSelect');
+    if (modelSelect) modelSelect.addEventListener('change', () => {
+      state.modelSelectedId = modelSelect.value || null;
+      renderModelOverview(state.snapshot || {});
+    });
 
     const sessionSearch = $('sessionSearch');
     if (sessionSearch) sessionSearch.addEventListener('input', () => {

@@ -123,7 +123,7 @@ test("failed quota reads mark a gap and stop stale reset predictions", async () 
     },
     close: async () => {},
   };
-  const c = new Collector({
+  const c = new Collector({resetFetcher: null,
     dataDir: dir,
     reader: { read: () => ({ threads: [], diagnostics: {} }) },
     client,

@@ -80,7 +80,7 @@ test("recommendations require account model availability", () => {
 test("HTTP snapshots respond while upstream never completes; safe settings do not invoke model writes", async () => {
   const dataDir = await mkdtemp(join(tmpdir(), "quota-http-test-"));
   let writes = 0;
-  const c = new Collector({
+  const c = new Collector({resetFetcher: null,
     dataDir,
     reader: { read: () => ({ threads: [], diagnostics: {} }) },
     client: {

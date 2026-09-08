@@ -7,6 +7,12 @@ import { CodexAppServerClient } from "./app-server-client.mjs";
 import { Estimator, accountDisplay, mainWindow } from "./metrics.mjs";
 import { recommend } from "./recommend.mjs";
 import { buildModelOverview } from "./model-overview.mjs";
+import {
+  buildResetRadar,
+  fetchResetReference,
+  normalizeReference,
+  RESET_REFRESH_INTERVAL_MS,
+} from "./reset-radar.mjs";
 
 export const DEFAULT_SETTINGS = {
   pollSeconds: 5,
@@ -53,11 +59,22 @@ export function validateSettings(patch) {
 }
 
 export class Collector {
-  constructor({ dataDir, codexHome, reader, client, demo = false }) {
+  constructor({
+    dataDir,
+    codexHome,
+    reader,
+    client,
+    demo = false,
+    resetFetcher = fetchResetReference,
+  }) {
     this.dataDir = dataDir;
     this.reader = reader || new LocalReader({ codexHome });
     this.client = client || new CodexAppServerClient();
     this.demo = demo;
+    this.resetFetcher = resetFetcher;
+    this.resetReference = null;
+    this.resetRadarError = null;
+    this.nextResetRadar = 0;
     this.settings = { ...DEFAULT_SETTINGS };
     this.threads = [];
     this.diagnostics = [];
@@ -78,6 +95,8 @@ export class Collector {
       llmCalls: 0,
       configReads: 0,
       configWrites: 0,
+      resetRadarRefreshes: 0,
+      resetRadarRequests: 0,
     };
     this.recommendation = {};
     this.nextQuota = 0;
@@ -108,6 +127,11 @@ export class Collector {
       this.estimator = new Estimator(saved.estimator);
       this.originalDefaults = saved.originalDefaults;
       this.lastApplied = saved.lastApplied;
+      if (saved.resetReference) {
+        try {
+          this.resetReference = normalizeReference(saved.resetReference);
+        } catch {}
+      }
     } catch (error) {
       if (error.code !== "ENOENT") {
         // Preserve a damaged state rather than silently overwriting the evidence.
@@ -126,7 +150,10 @@ export class Collector {
     });
     await this.local();
     this.schedule();
-    if (!this.settings.paused) this.remote();
+    if (!this.settings.paused) {
+      this.remote();
+      this.refreshResetRadar();
+    }
   }
 
   save() {
@@ -137,6 +164,7 @@ export class Collector {
       estimator: this.estimator.state,
       originalDefaults: this.originalDefaults,
       lastApplied: this.lastApplied,
+      resetReference: this.resetReference,
     });
     this.saving = (this.saving || Promise.resolve())
       .catch(() => {})
@@ -215,6 +243,7 @@ export class Collector {
         if (!this.settings.paused) {
           await this.local();
           if (Date.now() >= this.nextQuota) this.remote();
+          if (Date.now() >= this.nextResetRadar) this.refreshResetRadar();
         }
       } catch (error) {
         this.diagnostics = ["本地调度错误：" + errorText(error)];
@@ -332,6 +361,37 @@ export class Collector {
       }
     }
     if (!this.closed) await this.save();
+  }
+
+  refreshResetRadar() {
+    if (this.closed || this.demo || this.settings.paused || !this.resetFetcher)
+      return Promise.resolve();
+    if (this.resetBackground) return this.resetBackground;
+    this.nextResetRadar = Date.now() + RESET_REFRESH_INTERVAL_MS;
+    const controller = new AbortController();
+    this.resetAbort = controller;
+    const timeout = setTimeout(() => controller.abort(), 8000);
+    this.cost.resetRadarRefreshes += 1;
+    this.cost.resetRadarRequests += 2; // Public timeline and forecast, never account data.
+    this.resetBackground = (async () => {
+      try {
+        const reference = await this.resetFetcher({
+          signal: controller.signal,
+          now: Date.now(),
+        });
+        if (this.closed) return;
+        this.resetReference = normalizeReference(reference);
+        this.resetRadarError = null;
+        await this.save();
+      } catch (error) {
+        if (!this.closed) this.resetRadarError = errorText(error);
+      } finally {
+        clearTimeout(timeout);
+        this.resetAbort = null;
+        this.resetBackground = null;
+      }
+    })();
+    return this.resetBackground;
   }
 
   refreshRecommendation() {
@@ -522,6 +582,7 @@ export class Collector {
       },
       cost: {
         ...this.cost,
+        resetRadarRefreshSeconds: RESET_REFRESH_INTERVAL_MS / 1000,
         requestsPerHour: this.settings.paused
           ? 0
           : 3600 / this.settings.quotaPollSeconds,
@@ -538,6 +599,14 @@ export class Collector {
         state,
         now,
       }),
+      resetRadar: {
+        ...buildResetRadar({
+          now,
+          ...(this.resetReference ? { reference: this.resetReference } : {}),
+        }),
+        fetchError: this.resetRadarError,
+        refreshSeconds: RESET_REFRESH_INTERVAL_MS / 1000,
+      },
       capabilities: {
         nativeInline: false,
         windowPopup: false,
@@ -580,9 +649,14 @@ export class Collector {
   async close() {
     this.closed = true;
     clearTimeout(this.timer);
+    this.resetAbort?.abort();
     await this.client.close();
     await Promise.race([
-      Promise.allSettled([this.background, this.mutationQueue]),
+      Promise.allSettled([
+        this.background,
+        this.mutationQueue,
+        this.resetBackground,
+      ]),
       new Promise((resolve) => setTimeout(resolve, 1000)),
     ]);
     await this.save();
