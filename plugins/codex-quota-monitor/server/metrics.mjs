@@ -293,6 +293,41 @@ function executionTurns(thread, now) {
   return [...unique.values()];
 }
 
+function authoritativeSingleTurn(thread) {
+  const history = thread.executionHistory;
+  const evidence = thread.activityEvidence;
+  if (thread.parentThreadId || history?.source !== "thread_history" ||
+      evidence?.source !== "thread_history" || !Array.isArray(history.turns) ||
+      history.turns.length !== 1) return null;
+  const turn = history.turns[0];
+  const turnId = typeof turn?.turnId === "string" && turn.turnId
+    ? turn.turnId : null;
+  const evidenceId = typeof evidence.turnId === "string" && evidence.turnId
+    ? evidence.turnId : null;
+  const startedAt = Number.isFinite(turn?.startedAt) ? turn.startedAt : null;
+  if (!turnId || turnId !== evidenceId || !Number.isFinite(startedAt) ||
+      startedAt !== thread.startedAt) return null;
+  return { ...turn, turnId, startedAt };
+}
+
+function firstObservedTurnInterval(thread, previousAt, now) {
+  const turn = authoritativeSingleTurn(thread);
+  const createdAt = Number.isFinite(thread.createdAt) ? thread.createdAt : null;
+  if (!turn || !Number.isFinite(previousAt) || !Number.isFinite(createdAt) ||
+      createdAt < previousAt || createdAt > turn.startedAt + 1_000 ||
+      turn.startedAt < previousAt - 1_000 || turn.startedAt > now) return null;
+  // Thread creation is millisecond-precise while projected turn starts can be
+  // second-precise. Anchor the recoverable interval at the latest boundary.
+  const startAt = Math.max(previousAt, createdAt, turn.startedAt);
+  if (thread.status === "active" && turn.status === "active" && now > startAt)
+    return [startAt, now];
+  const completedAt = Number(turn.completedAt);
+  if (thread.status === "idle" && turn.status === "idle" &&
+      Number.isFinite(completedAt) && completedAt > startAt && completedAt <= now)
+    return [startAt, completedAt];
+  return null;
+}
+
 function executionKeyMatches(thread, turn, key, record) {
   if (typeof key !== "string") return false;
   if (turn.current && record && sameTurn(record, turnIdentity(thread)))
@@ -344,6 +379,7 @@ export class Estimator {
       retentionHours: DEFAULT_RETENTION_HOURS,
       rollingStartedAt: null,
       rollingAllocations: [],
+      rollingCompletionEstimates: [],
       rollingObservations: [],
       rollingQuotaEvents: [],
       rollingCoverage: "timestamped",
@@ -363,6 +399,8 @@ export class Estimator {
     s.retentionHours = normalizeRetentionHours(s.retentionHours);
     s.rollingAllocations = Array.isArray(s.rollingAllocations)
       ? s.rollingAllocations : [];
+    s.rollingCompletionEstimates = Array.isArray(s.rollingCompletionEstimates)
+      ? s.rollingCompletionEstimates : [];
     s.rollingObservations = Array.isArray(s.rollingObservations)
       ? s.rollingObservations : [];
     s.rollingQuotaEvents = Array.isArray(s.rollingQuotaEvents)
@@ -716,6 +754,13 @@ export class Estimator {
     s.rollingAllocations = s.rollingAllocations
       .map((event) => this.sliceAllocation(event, now))
       .filter(Boolean);
+    s.rollingCompletionEstimates = s.rollingCompletionEstimates.filter((event) =>
+      typeof event?.id === "string" && event.id &&
+      typeof event?.turnKey === "string" && event.turnKey &&
+      Number.isFinite(event.percent) && event.percent > 0 &&
+      Number.isFinite(event.tokens) && event.tokens > 0 &&
+      Number.isFinite(event.startAt) && Number.isFinite(event.endAt) &&
+      event.endAt > event.startAt && event.startAt >= cutoff && event.endAt <= now);
     s.rollingObservations = s.rollingObservations
       .filter((event) => Number.isFinite(event?.endAt) && event.endAt > cutoff && event.startAt <= now)
       .map((event) => ({
@@ -783,9 +828,11 @@ export class Estimator {
     for (const [id, seenAt] of Object.entries(s.lastSeenAt)) {
       if (!Number.isFinite(seenAt) || seenAt >= cutoff) continue;
       const hasAllocation = s.rollingAllocations.some((event) => event.id === id);
+      const hasCompletionEstimate = s.rollingCompletionEstimates.some((event) => event.id === id);
       const hasObservation = s.rollingObservations.some((event) => event.threadId === id);
       const hasPending = Number.isFinite(s.pending[id]) && s.pending[id] > 0;
-      if (hasAllocation || hasObservation || hasPending || s.latestTurns[id]) continue;
+      if (hasAllocation || hasCompletionEstimate || hasObservation || hasPending ||
+          s.latestTurns[id]) continue;
       expiredSeenIds.add(id);
       delete s.lastSeenAt[id];
       delete s.lastTokens[id];
@@ -794,6 +841,7 @@ export class Estimator {
     s.sessionOrder = s.sessionOrder.filter((id) =>
       !expiredSeenIds.has(id) ||
       s.rollingAllocations.some((event) => event.id === id) ||
+      s.rollingCompletionEstimates.some((event) => event.id === id) ||
       s.rollingObservations.some((event) => event.threadId === id));
     if (Number.isFinite(s.rollingStartedAt))
       s.rollingStartedAt = Math.max(s.rollingStartedAt, cutoff);
@@ -1062,7 +1110,7 @@ export class Estimator {
     return { value, hasEvent: value > 0, tokens };
   }
 
-  effectiveAllocation(id, now, turnKey = null) {
+  directAllocation(id, now, turnKey = null) {
     const confirmed = this.rollingAllocation(id, now, turnKey);
     const provisional = this.provisionalAllocation(id, now, turnKey);
     const hasEvent = confirmed.hasEvent || provisional.hasEvent;
@@ -1084,6 +1132,58 @@ export class Estimator {
       source,
       estimated: provisional.hasEvent || source === "legacy-uniform-estimate",
       coverage: this.coverageForEvents(confirmed.events, provisional.hasEvent),
+    };
+  }
+
+  completionEstimateCovered(event, now) {
+    if (this.provisionalAllocation(event.id, now, event.turnKey).hasEvent)
+      return true;
+    return this.state.rollingAllocations.some((raw) => {
+      if (raw?.id !== event.id) return false;
+      const allocation = this.sliceAllocation(raw, now);
+      if (!allocation) return false;
+      if (allocation.turnKey === event.turnKey && allocation.turnPercent > 0)
+        return true;
+      if (allocation.turnKey) return false;
+      if (Number.isFinite(allocation.startAt) && Number.isFinite(allocation.endAt))
+        return allocation.startAt < event.endAt && allocation.endAt > event.startAt;
+      return Number.isFinite(allocation.at) && allocation.at >= event.startAt &&
+        allocation.at <= event.endAt;
+    });
+  }
+
+  completionEstimateAllocation(id, now, turnKey = null) {
+    const events = this.state.rollingCompletionEstimates.filter((event) =>
+      event.id === id && (!turnKey || event.turnKey === turnKey) &&
+      event.startAt >= this.cutoffAt(now) && event.endAt <= now &&
+      !this.completionEstimateCovered(event, now));
+    const value = events.reduce((sum, event) => sum + event.percent, 0);
+    return {
+      value,
+      hasEvent: events.length > 0,
+      events,
+      coverage: events.length ? "completed-single-turn-token-calibrated" : "none",
+    };
+  }
+
+  effectiveAllocation(id, now, turnKey = null) {
+    const direct = this.directAllocation(id, now, turnKey);
+    const completion = this.completionEstimateAllocation(id, now, turnKey);
+    if (!completion.hasEvent) return {
+      ...direct,
+      includesCompletionRecovery: false,
+    };
+    return {
+      value: direct.value + completion.value,
+      hasEvent: true,
+      confirmed: direct.confirmed,
+      provisional: direct.provisional + completion.value,
+      source: direct.hasEvent
+        ? "mixed-with-completed-single-turn-token-calibrated"
+        : "completed-single-turn-token-calibrated",
+      estimated: true,
+      coverage: direct.hasEvent ? "mixed" : completion.coverage,
+      includesCompletionRecovery: true,
     };
   }
 
@@ -1188,6 +1288,9 @@ export class Estimator {
       const latest = this.latestTurn(t, now);
       const identified = Boolean(latest && old?.turnKey === latest.key &&
         old.status !== "unknown" && t.status !== "unknown");
+      const firstTurnInterval = continuous && !old
+        ? firstObservedTurnInterval(t, previousAt, now) : null;
+      const turnIdentified = identified || Boolean(latest && firstTurnInterval);
       let interval = null;
       if (continuous && old && old.status !== "unknown" && t.status !== "unknown") {
         if (t.status === "active" && Number.isFinite(t.startedAt)) {
@@ -1203,39 +1306,45 @@ export class Estimator {
             Math.min(now, t.completedAt),
           ];
         }
+      } else if (firstTurnInterval) {
+        interval = firstTurnInterval;
+        latest.observedSince = Math.min(latest.observedSince, interval[0]);
       }
       const ledger = this.ledger(t.id);
       if (interval && interval[1] > interval[0]) {
         ledger.activeSeconds += (interval[1] - interval[0]) / 1000;
         intervals.set(t.id, interval);
-        const turnKey = identified ? latest.key : null;
+        const turnKey = turnIdentified ? latest.key : null;
         this.appendObservation(t.id, interval, turnKey, now);
-        if (identified) latest.observedSeconds += (interval[1] - interval[0]) / 1000;
+        if (turnIdentified) latest.observedSeconds += (interval[1] - interval[0]) / 1000;
       }
       const previous = s.lastTokens[t.id];
       const tokenKnown = Number.isFinite(t.tokens) && t.tokens >= 0 && t.tokensKnown !== false;
       const tokens = tokenKnown ? t.tokens : null;
-      const delta =
-        previous == null || !continuous || !old?.tokensKnown || !tokenKnown
+      const firstTurnTokens = Boolean(firstTurnInterval && tokenKnown && tokens > 0);
+      const delta = firstTurnTokens
+        ? tokens
+        : previous == null || !continuous || !old?.tokensKnown || !tokenKnown
           ? 0
           : Math.max(0, tokens - previous);
       s.lastTokens[t.id] = tokens;
       if (!/spark/.test(t.model || "")) {
         s.pending[t.id] = (s.pending[t.id] || 0) + delta;
-        const sampledRange = continuous && previousAt < now
-          ? [previousAt, now] : null;
+        const sampledRange = firstTurnTokens
+          ? firstTurnInterval
+          : continuous && previousAt < now ? [previousAt, now] : null;
         if (delta > 0 && sampledRange)
           this.extendPendingRange(t.id, sampledRange);
-        if (identified && delta > 0) {
+        if (turnIdentified && delta > 0) {
           const bucket = s.pendingTurns[t.id];
           if (!bucket || bucket.key !== latest.key)
             s.pendingTurns[t.id] = { key: latest.key, tokens: delta };
           else bucket.tokens += delta;
           if (sampledRange) this.extendPendingRange(t.id, sampledRange, latest.key);
         }
-        if (!identified || !continuous) s.activity[t.id] = [];
+        if (!turnIdentified || !continuous) s.activity[t.id] = [];
         const points = (s.activity[t.id] ||= []);
-        points.push({ at: now, delta: identified ? delta : 0 });
+        points.push({ at: now, delta: turnIdentified ? delta : 0 });
         s.activity[t.id] = points
           .filter((p) => p.at >= now - 120000)
           .slice(-240);
@@ -1255,6 +1364,15 @@ export class Estimator {
       ]),
     );
     this.lastAt = now;
+    for (const thread of threads) {
+      if (/spark/.test(thread.model || "")) continue;
+      const direct = this.directAllocation(thread.id, now);
+      // Freeze a qualified completion even while its known tokens are pending.
+      // The pending estimate wins now; this record becomes useful only if a
+      // restart loses that unconfirmed bucket before an account sample arrives.
+      if (!(direct.confirmed > 0))
+        this.recordCompletedSingleTurnEstimate(thread, now);
+    }
     this.rebuildRollingCaches(now);
   }
 
@@ -1284,6 +1402,7 @@ export class Estimator {
       s.pendingTurnRanges = {};
       s.pendingSince = null;
       s.rollingAllocations = [];
+      s.rollingCompletionEstimates = [];
       s.rollingObservations = [];
       s.rollingQuotaEvents = [];
       s.rollingStartedAt = now;
@@ -1441,9 +1560,55 @@ export class Estimator {
       ? tokens / (coveredMs / 1000) : null;
   }
 
+  recordCompletedSingleTurnEstimate(thread, now) {
+    const turn = authoritativeSingleTurn(thread);
+    const latest = this.state.latestTurns[thread.id];
+    const createdAt = Number.isFinite(thread.createdAt) ? thread.createdAt : null;
+    const completedAt = Number.isFinite(turn?.completedAt) ? turn.completedAt : null;
+    const trackingSince = Number.isFinite(this.state.sessionTrackingSince)
+      ? this.state.sessionTrackingSince : null;
+    if (!turn || thread.status !== "idle" || turn.status !== "idle" ||
+        thread.executionHistory?.coverage !== "local-records" ||
+        thread.tokensKnown !== true || !Number.isFinite(thread.tokens) || thread.tokens <= 0 ||
+        !Number.isFinite(createdAt) || createdAt > turn.startedAt + 1_000 ||
+        !Number.isFinite(completedAt) || completedAt <= turn.startedAt || completedAt > now ||
+        turn.startedAt < this.cutoffAt(now) || !Number.isFinite(trackingSince) ||
+        createdAt < trackingSince || turn.startedAt < trackingSince - 1_000 ||
+        !latest?.key || !sameTurn(latest, turnIdentity(thread))) return;
+    if (this.state.rollingCompletionEstimates.some((event) =>
+      event.id === thread.id && event.turnKey === latest.key)) return;
+    const observed = this.state.rollingObservations.some((event) =>
+      event?.threadId === thread.id && event.turnKey === latest.key &&
+      Number.isFinite(event.startAt) && Number.isFinite(event.endAt) &&
+      event.endAt > event.startAt && event.startAt < completedAt &&
+      event.endAt > turn.startedAt);
+    if (!observed) return;
+    const calibration = this.rollingCalibration(now);
+    if (!(calibration.tokens > 0 && calibration.percent > 0)) return;
+    const value = thread.tokens * calibration.percent / calibration.tokens;
+    if (!(value > 0)) return;
+    this.state.rollingCompletionEstimates.push({
+      at: now,
+      id: thread.id,
+      turnId: turn.turnId,
+      turnKey: latest.key,
+      startAt: turn.startedAt,
+      endAt: completedAt,
+      tokens: thread.tokens,
+      percent: value,
+      calibrationTokens: calibration.tokens,
+      calibrationPercent: calibration.percent,
+      quotaIdentity: this.state.previous?.identity || null,
+      coverage: "completed-single-turn-token-calibrated",
+    });
+  }
+
   individual(thread, now) {
     const s = this.state;
     const covered = !/spark/.test(thread.model || "");
+    const directAllocation = this.directAllocation(thread.id, now);
+    if (covered && !(directAllocation.confirmed > 0))
+      this.recordCompletedSingleTurnEstimate(thread, now);
     const allocation = this.effectiveAllocation(thread.id, now);
     const estimate = covered && allocation.hasEvent ? allocation.value : null;
     const recentTokenRate = this.recentTokenRate(thread.id, now);
@@ -1472,6 +1637,7 @@ export class Estimator {
           source: null,
           coverage: "none",
           provisional: 0,
+          includesCompletionRecovery: false,
         };
     const turnAverage = latestSeconds > 0 && latestAllocation.value > 0
       ? latestSeconds / latestAllocation.value : null;
@@ -1504,6 +1670,7 @@ export class Estimator {
       estimateCoverage: covered ? allocation.coverage : "unsupported",
       estimateSource: estimate === null ? null : allocation.source,
       estimateEstimated: estimate !== null,
+      estimateIncludesRecovery: allocation.includesCompletionRecovery === true,
       latestTurnElapsedSeconds: latestSeconds,
       latestTurnStartedAt: [thread.startedAt, latest?.startedAt]
         .filter((at) => Number.isFinite(at) && at <= now)
@@ -1516,6 +1683,8 @@ export class Estimator {
       latestTurnEstimateSource: latestAllocation.hasEvent
         ? latestAllocation.source : null,
       latestTurnEstimateEstimated: latestAllocation.hasEvent,
+      latestTurnEstimateIncludesRecovery:
+        latestAllocation.includesCompletionRecovery === true,
       latestTurnSecondsPerPercent: latestRate,
       latestTurnRateSource: latestRateSource,
       latestTurnRateEstimated: latestRate !== null,
@@ -1606,6 +1775,7 @@ export class Estimator {
       latestTurnRateEstimated: own.latestTurnRateEstimated,
       latestTurnEstimateSource: own.latestTurnEstimateSource,
       latestTurnEstimateEstimated: own.latestTurnEstimateEstimated,
+      latestTurnEstimateIncludesRecovery: own.latestTurnEstimateIncludesRecovery,
       latestTurnStatus: own.status,
       latestTurnChildCount: 0,
     };
@@ -1689,6 +1859,7 @@ export class Estimator {
     const cutoff = this.cutoffAt(now);
     if (executionIntervals(thread, now, true, cutoff).length) return true;
     if (this.rollingAllocation(thread.id, now).hasEvent) return true;
+    if (this.completionEstimateAllocation(thread.id, now).hasEvent) return true;
     if (this.rollingObservationSeconds(thread.id, now) > 0) return true;
     if (Number.isFinite(this.state.pending[thread.id]) && this.state.pending[thread.id] > 0)
       return true;
@@ -1780,6 +1951,7 @@ export class Estimator {
         const coverages = new Set(contributions.map((row) => row.estimateCoverage));
         const sources = [...new Set(contributions.map((row) => row.estimateSource).filter(Boolean))];
         const provisional = contributions.some((row) => row.estimateStatus === "provisional");
+        const includesRecovery = contributions.some((row) => row.estimateIncludesRecovery);
         rows.set(thread.id, {
           ...own,
           status,
@@ -1802,6 +1974,7 @@ export class Estimator {
           estimateCoverage: coverages.size === 1 ? contributions[0]?.estimateCoverage || "none" : "mixed",
           estimateSource: sources.length === 1 ? sources[0] : sources.length ? "mixed" : null,
           estimateEstimated: estimated !== null,
+          estimateIncludesRecovery: includesRecovery,
           estimateStatus: known ? provisional ? "provisional" : "allocated" : "unavailable",
           rateStatus: status === "active" ? rate > 0 ? "recent-estimate" : "no-recent-sample"
             : estimated > 0 && totalElapsedSeconds > 0 ? "observed-average" : "no-timed-sample",
@@ -1811,6 +1984,7 @@ export class Estimator {
           ownAverageSecondsPerPercent: own.averageSecondsPerPercent,
           ownObservationSeconds: own.observationSeconds,
           ownEstimateSource: own.estimateSource,
+          ownEstimateIncludesRecovery: own.estimateIncludesRecovery,
           ...this.latestFamily(thread, members, ownRows, now),
         });
       }

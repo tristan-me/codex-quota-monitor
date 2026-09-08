@@ -1,6 +1,6 @@
 # Codex Quota Monitor
 
-Codex Quota Monitor is a local v0.2.0 beta plugin for observing Codex account windows, discovering local sessions, and presenting transparent estimates of per-session subscription usage. It does not present an estimate as an official itemized bill.
+Codex Quota Monitor is a Codex plugin for observing Codex account windows, discovering local sessions, and presenting transparent estimates of per-session subscription usage. It does not present an estimate as an official itemized bill.
 
 [中文 README](./README.md) · [Diagnosis guide](./docs/diagnosis.md)
 
@@ -50,7 +50,7 @@ Account, session, and consumption values in these screenshots are synthetic exam
 
   > Important: per-session percentages and speeds are transparent estimates, not official exact itemization or a guarantee about future usage.
 
-Percentages and decimal values are displayed to two decimal places; internal calculations retain higher precision. The display precision is not a claim about official itemization accuracy. Missing samples display `—` rather than a fabricated zero.
+Account and model-overview percentages and ordinary decimal values remain at two decimal places. Positive session estimates below 0.1% and session quota split notes keep enough decimal digits for at least three significant digits, up to 10 decimal places; more extreme values use scientific notation. Internal calculations retain higher precision. Display precision is not a claim about official itemization accuracy. Missing samples display `—` rather than a fabricated zero.
 
 ## Sessions and model overview
 
@@ -59,6 +59,8 @@ The right-edge table of contents expands on hover or keyboard focus. Search sess
 Each task has two metric lines: total execution time, monitored quota estimate and measured average time per 1%; then the latest turn family duration, separately observed quota estimate and current prediction. The latest turn family includes child executions started during that turn, and child rows apply the same rule to their descendants. Parent quota totals include discovered children, with overlapping execution intervals counted once for elapsed time. Totals cover all retained turns; the latest line covers only the latest turn and child executions launched within it. Task rows show the parent/child quota split. Session consumption is ordered by each task's latest session start time, newest first. Execution time uses retained local records, capped at the latest 5000 turns per thread; incomplete and legacy records remain partial. The panel explains that elapsed time comes from locally retained execution records and may be incomplete.
 
 Quota totals and average rates only cover the selected sliding window, so the average is not calculated from retained history outside that window. Completed tasks use that turn's execution time and quota record; active tasks prefer token calibration from the latest 5-second sample, which is an estimate rather than an official exact five-second charge, and fall back to the current turn average when calibration is unavailable. Latest-turn quota is tracked separately and never copied from a task's total allocation. Missing evidence displays `—`, not zero.
+
+The quota trend shows the first sample time in its header and labels the starting and latest remaining quota directly on the line.
 
 The model overview shows one model per page, with a selector and previous/next controls. Desktop cards use three rows: `ultra / max`, `xhigh / high`, and `medium / low`. Shared source notes appear above the cards. Local observations take priority; dated Codex Radar DeepSWE cost/hour ratios are only used with a comparable local calibration sample. API costs do not equal subscription percentages, and Spark's separate quota pool does not borrow calibration from the main Codex pool.
 

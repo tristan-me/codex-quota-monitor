@@ -86,6 +86,18 @@
     return parsed === null ? '—' : `${parsed.toFixed(2)}%`;
   }
 
+  function formatTaskPercent(value) {
+    const parsed = finiteNumber(value);
+    if (parsed === null) return '—';
+    if (parsed > 0 && parsed < 0.1) {
+      const exponent = Math.floor(Math.log10(parsed));
+      const decimalPlaces = 2 - exponent;
+      if (decimalPlaces <= 10) return `${parsed.toFixed(decimalPlaces)}%`;
+      return `${parsed.toExponential(2).replace('e+', 'e')}%`;
+    }
+    return formatPercent(parsed);
+  }
+
   function formatCredits(value) {
     const parsed = finiteNumber(value);
     return parsed === null ? '—' : parsed.toFixed(2);
@@ -691,11 +703,17 @@
       const metrics = sessionTotals(session);
       const statLine = document.createElement('div');
       statLine.className = 'session-stat-line';
-      const totalLine = `任务总耗时${formatDuration(metrics.totalElapsedSeconds)}，任务消耗额度${formatPercent(metrics.totalEstimatedPercent)}，平均每 1% 额度能撑 ${formatDuration(metrics.averageSecondsPerPercent)}；`;
-      const latestLine = `最近一次会话耗时${formatDuration(metrics.latestTurnElapsedSeconds)}，最近一次会话消耗额度${formatPercent(metrics.latestTurnEstimatedPercent)}，预计接下来每 1% 额度能撑 ${formatDuration(metrics.secondsPerPercent)}`;
+      const totalLine = `任务总耗时${formatDuration(metrics.totalElapsedSeconds)}，任务消耗额度${formatTaskPercent(metrics.totalEstimatedPercent)}，平均每 1% 额度能撑 ${formatDuration(metrics.averageSecondsPerPercent)}；`;
+      const latestLine = `最近一次会话耗时${formatDuration(metrics.latestTurnElapsedSeconds)}，最近一次会话消耗额度${formatTaskPercent(metrics.latestTurnEstimatedPercent)}，预计接下来每 1% 额度能撑 ${formatDuration(metrics.secondsPerPercent)}`;
       statLine.append(textElement('span', 'session-stat-line-block', totalLine));
       statLine.append(textElement('span', 'session-stat-line-block', latestLine));
       row.append(statLine);
+
+      if (session.estimateIncludesRecovery === true || session.ownEstimateIncludesRecovery === true) {
+        row.append(textElement('p', 'session-scope-note', session.latestTurnEstimateIncludesRecovery === true
+          ? '最近一轮的部分额度由已记录的 token 用量校准补估。'
+          : '任务总额包含历史单轮的 token 用量校准补估。'));
+      }
 
       if (children.length > 0) {
         const ownQuota = finiteNumber(session.ownEstimatedPercent);
@@ -706,9 +724,9 @@
         const knownChildQuotas = childQuotas.filter(value => value !== null);
         const childQuota = knownChildQuotas.reduce((sum, value) => sum + value, 0);
         const childText = knownChildQuotas.length
-          ? `${formatPercent(childQuota)}${knownChildQuotas.length < children.length ? '（部分样本）' : ''}`
+          ? `${formatTaskPercent(childQuota)}${knownChildQuotas.length < children.length ? '（部分样本）' : ''}`
           : '等待采样';
-        row.append(textElement('p', 'session-scope-note', `总额度拆分：本任务累计 ${ownQuota === null ? '等待采样' : formatPercent(ownQuota)}，子任务合计 ${childText}。并行耗时不重复累加；${latestTurnScopeText(session)}`));
+        row.append(textElement('p', 'session-scope-note', `总额度拆分：本任务累计 ${ownQuota === null ? '等待采样' : formatTaskPercent(ownQuota)}，子任务合计 ${childText}。并行耗时不重复累加；${latestTurnScopeText(session)}`));
         const key = safeText(session.id, session.title || `root-${start + index}`);
         const matchingChildren = tokens.length ? children.filter((child) => sessionMatches(child, tokens)) : [];
         const childSearchMatch = tokens.length > 0 && matchingChildren.length > 0;
@@ -769,8 +787,8 @@
             const childMetrics = sessionTotals(child);
             const childLine = document.createElement('div');
             childLine.className = 'session-stat-line';
-            childLine.append(textElement('span', 'session-stat-line-block', `任务总耗时${formatDuration(childMetrics.totalElapsedSeconds)}，任务消耗额度${formatPercent(childMetrics.totalEstimatedPercent)}，平均每 1% 额度能撑 ${formatDuration(childMetrics.averageSecondsPerPercent)}；`));
-            childLine.append(textElement('span', 'session-stat-line-block', `最近一次会话耗时${formatDuration(childMetrics.latestTurnElapsedSeconds)}，最近一次会话消耗额度${formatPercent(childMetrics.latestTurnEstimatedPercent)}，预计接下来每 1% 额度能撑 ${formatDuration(childMetrics.secondsPerPercent)}`));
+            childLine.append(textElement('span', 'session-stat-line-block', `任务总耗时${formatDuration(childMetrics.totalElapsedSeconds)}，任务消耗额度${formatTaskPercent(childMetrics.totalEstimatedPercent)}，平均每 1% 额度能撑 ${formatDuration(childMetrics.averageSecondsPerPercent)}；`));
+            childLine.append(textElement('span', 'session-stat-line-block', `最近一次会话耗时${formatDuration(childMetrics.latestTurnElapsedSeconds)}，最近一次会话消耗额度${formatTaskPercent(childMetrics.latestTurnEstimatedPercent)}，预计接下来每 1% 额度能撑 ${formatDuration(childMetrics.secondsPerPercent)}`));
             childRow.append(childLine);
             const latestChildCount = finiteNumber(child.latestTurnChildCount);
             if (latestChildCount !== null && latestChildCount > 0) {
@@ -904,6 +922,26 @@
     return element;
   }
 
+  function formatTrendStart(value, fallback = '时间待定') {
+    const date = value instanceof Date ? value : parseDate(value);
+    if (!date) return fallback;
+    try {
+      const parts = new Intl.DateTimeFormat('zh-CN', {
+        month: 'numeric',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        hourCycle: 'h23',
+      }).formatToParts(date).reduce((map, part) => {
+        map[part.type] = part.value;
+        return map;
+      }, {});
+      return `${parts.month}/${parts.day} ${parts.hour}:${parts.minute}`;
+    } catch (_error) {
+      return fallback;
+    }
+  }
+
   function renderTrend(snapshot) {
     const chart = $('trendChart');
     if (!chart) return;
@@ -920,9 +958,9 @@
       setText('trendLatest', '等待历史样本', '等待历史样本');
       return;
     }
-    const width = 680;
+    const width = Math.max(240, Math.min(680, chart.clientWidth || 680));
     const height = 220;
-    const padding = { top: 18, right: 20, bottom: 34, left: 44 };
+    const padding = { top: 18, right: 20, bottom: 34, left: 56 };
     const innerWidth = width - padding.left - padding.right;
     const innerHeight = height - padding.top - padding.bottom;
     const values = points.map((point) => point.value);
@@ -975,6 +1013,30 @@
     });
     const first = points[0];
     const last = points[points.length - 1];
+
+    const valueLabelY = (point) => {
+      const pointY = scaleY(point.value);
+      const above = pointY > padding.top + 24;
+      const preferred = above ? pointY - 12 : pointY + 18;
+      return Math.max(padding.top + 11, Math.min(height - padding.bottom - 10, preferred));
+    };
+    const appendValueLabel = (point, text, anchor, className, xOffset) => {
+      const label = createSvgElement('text', {
+        x: scaleX(point === first ? 0 : points.length - 1) + xOffset,
+        y: valueLabelY(point),
+        'text-anchor': anchor,
+        class: `trend-value-label ${className}`,
+      });
+      label.textContent = text;
+      svg.append(label);
+    };
+
+    if (points.length === 1) {
+      appendValueLabel(first, `起点 / 最新 ${formatPercent(first.value)}`, 'middle', 'trend-latest-label', 0);
+    } else {
+      appendValueLabel(first, `${width < 420 ? '' : '起点 '}${formatPercent(first.value)}`, 'start', 'trend-first-label', 8);
+      appendValueLabel(last, `${width < 420 ? '' : '最新 '}${formatPercent(last.value)}`, 'end', 'trend-latest-label', -8);
+    }
     const firstLabel = createSvgElement('text', { x: padding.left, y: height - 10, class: 'chart-axis-label' });
     firstLabel.textContent = formatDate(first.at, '开始');
     svg.append(firstLabel);
@@ -982,7 +1044,8 @@
     lastLabel.textContent = formatDate(last.at, '现在');
     svg.append(lastLabel);
     chart.append(svg);
-    setText('trendLatest', `最新 ${formatPercent(last.value)} · ${formatDate(last.at, '时间待定')}`, '等待历史样本');
+    const firstTimedPoint = points.find((point) => point.at);
+    setText('trendLatest', `统计自 ${formatTrendStart(firstTimedPoint && firstTimedPoint.at)}`, '等待历史样本');
   }
 
   function renderModelOverview(snapshot) {
@@ -1843,6 +1906,14 @@
     }
     bindControls();
     bindDisclaimer();
+    let trendResizeFrame = null;
+    window.addEventListener('resize', () => {
+      if (trendResizeFrame !== null) window.cancelAnimationFrame(trendResizeFrame);
+      trendResizeFrame = window.requestAnimationFrame(() => {
+        trendResizeFrame = null;
+        if (state.snapshot) renderTrend(state.snapshot);
+      });
+    });
     render({});
     window.setInterval(renderCountdowns, 1000);
     fetchSnapshot().finally(() => openDisclaimerIfNeeded());

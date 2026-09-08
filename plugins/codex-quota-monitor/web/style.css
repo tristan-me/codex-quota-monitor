@@ -1300,6 +1300,21 @@ button:disabled {
   stroke-width: 2;
 }
 
+.trend-value-label {
+  fill: var(--text);
+  font-family: inherit;
+  font-size: 10px;
+  font-weight: 700;
+  paint-order: stroke;
+  stroke: rgba(13, 20, 37, 0.92);
+  stroke-linejoin: round;
+  stroke-width: 4px;
+}
+
+.trend-latest-label {
+  fill: var(--accent);
+}
+
 .chart-caption {
   margin: 9px 0 0;
   color: var(--muted);
