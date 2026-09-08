@@ -403,7 +403,7 @@
       if (mode === 'live' && account.stale === true) banner.classList.add('is-stale');
     }
     const titles = {
-      live: '真实账户 · Codex 额度监控器',
+      live: 'Codex 额度监控器',
       demo: '演示数据 · Codex 额度监控器',
       offline: '服务离线 · Codex 额度监控器',
       unknown: '数据源未声明 · Codex 额度监控器',
