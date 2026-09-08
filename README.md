@@ -108,9 +108,9 @@ codex plugin add codex-quota-monitor@codex-quota-monitor
 
 安装完成后，在桌面端打开“设置 → 插件”，确认 **Codex Quota Monitor** 已启用。然后新建本地会话，输入 `@` 并选择插件，再发送 `打开 Codex 额度监控器。`；插件会启动本机服务，并在聊天中返回可点击的当前有效 URL。
 
-安装动图展示的是已安装后的检查与启动流程，不是全新的安装过程：
+全新安装：发送仓库链接，让 Codex 完成安装，再打开监控面板。
 
-![已安装后的检查与启动](docs/media/install-and-launch.gif)
+![安装插件并打开面板](docs/media/install-and-launch.gif)
 
 可以用下列清单字段识别插件；这张表来自插件配置，不是原生设置页截图：
 

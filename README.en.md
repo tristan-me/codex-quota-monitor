@@ -97,9 +97,9 @@ codex plugin add codex-quota-monitor@codex-quota-monitor
 
 After installation, open “Settings → Plugins” in the desktop app and confirm that **Codex Quota Monitor** is enabled. Then start a new local conversation, type `@`, select the plugin, and send `打开 Codex 额度监控器。`; the plugin starts the local service and returns the current valid URL in the chat.
 
-The installation GIF shows a post-install check and launch flow; it is not a fresh-install recording:
+For a fresh installation, send Codex the repository link, let it install the plugin, then open the monitor.
 
-![Post-install check and launch](docs/media/install-and-launch.gif)
+![Install the plugin and open the monitor](docs/media/install-and-launch.gif)
 
 Identify the plugin by these manifest fields; this table is not a screenshot of the native settings page:
 
