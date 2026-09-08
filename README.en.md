@@ -4,6 +4,36 @@ Codex Quota Monitor is a local v0.2.0 beta plugin for observing Codex account wi
 
 [中文 README](./README.md) · [Diagnosis guide](./docs/diagnosis.md)
 
+## Quick start
+
+Prerequisites: a ChatGPT/Codex desktop build that supports local plugins, Node.js `>=22.13.0`, and a Codex CLI compatible with that desktop build.
+
+To have Codex install and start it for you, send Codex this exact prompt:
+
+```text
+Please install and start this plugin, then provide a clickable URL in the chat when it is ready: https://github.com/tristan-me/codex-quota-monitor
+```
+
+After installation, open a new local Codex conversation, type `@`, choose **Codex Quota Monitor** from the suggestions, and send: `打开 Codex 额度监控器。`
+
+Here is the complete Markdown mention text to send:
+
+```markdown
+[@Codex Quota Monitor](plugin://codex-quota-monitor@codex-quota-monitor) 打开 Codex 额度监控器。
+```
+
+In the actual composer, type `@` and select the plugin. Pasting the Markdown alone is not guaranteed to create a valid mention.
+
+This guide contains command replays and text instructions for the desktop steps. It does not include this plugin's native settings screenshot or a desktop screen recording. Dashboard screenshots use synthetic/public-reference data.
+
+## Installation walkthrough
+
+[![Installation and opening walkthrough](docs/media/codex-quota-monitor-cli-tutorial.gif)](docs/media/codex-quota-monitor-cli-tutorial.mp4)
+
+[View/download the 50-second MP4](docs/media/codex-quota-monitor-cli-tutorial.mp4) · [Copyable commands](#install-and-run-locally) · [Replay notes and execution evidence](docs/tutorials/README.md)
+
+The video uses Chinese captions and covers local marketplace registration, installation, checking the enabled plugin, opening it in a new chat, and bookmarking the dashboard. Local registration and installation were verified in an isolated configuration; native desktop actions are text instructions. This is a command replay, not a recording of the ChatGPT desktop UI. The optional remote Git route was not completed on this machine's network.
+
 ## Screenshots
 
 Account, session, and consumption values in these screenshots are synthetic examples. Reset announcements and third-party probabilities are public reference data captured at screenshot time, not current forecasts.
@@ -51,11 +81,35 @@ There is currently no official mount point that guarantees a custom popup every 
 
 Mode switching is opt-in in the UI. When enabled, it writes only the default `model` and `model_reasoning_effort` for the next new task. It does not take over a running task and does not claim to be globally optimal or the official best value choice. External references: [Codex Radar](https://codexradar.com/#model-ratings) and [Codex Reset](https://codex-reset.com/zh/).
 
+The project code is MIT-licensed. Rights to third-party reference data, public endpoint responses, and quoted post text remain with their respective sources. A public endpoint is not automatically an open-data license; see the [third-party sources and licensing note](./THIRD_PARTY_NOTICES.md).
+
 The plugin does not intercept composer input or submit turns on the user's behalf, and it does not promise to fix `failed to submit turn input: EmptyInput`. Use the [diagnosis guide](./docs/diagnosis.md) to separate host Codex, CLI/App Server, and local-panel failures.
 
 ## Install and run locally
 
-Requirements: Node.js `>=22.13.0`. The runtime has zero npm dependencies. `node:sqlite` is still experimental on Node 22.13, and is supported by this project.
+Requirements: a ChatGPT/Codex desktop build with local-plugin support, Node.js `>=22.13.0`, and a Codex CLI compatible with the desktop build. The runtime has zero npm dependencies. `node:sqlite` is still experimental on Node 22.13, and is supported by this project.
+
+### Recommended: start from an installed ChatGPT/Codex desktop app
+
+In a new local conversation, use the quick-start prompt above, or run these commands in a compatible Codex CLI with working GitHub access:
+
+```bash
+codex plugin marketplace add https://github.com/tristan-me/codex-quota-monitor
+codex plugin add codex-quota-monitor@codex-quota-monitor
+```
+
+After installation, open “Settings → Plugins” in the desktop app and confirm that **Codex Quota Monitor** is enabled. Then start a new local conversation, type `@`, select the plugin, and send `打开 Codex 额度监控器。`; the plugin starts the local service and returns the current valid URL in the chat.
+
+Identify the plugin by these manifest fields; this table is not a screenshot of the native settings page:
+
+| Field | Value |
+| --- | --- |
+| Display name | Codex Quota Monitor |
+| Short description | 本地会话额度估算与实时速率 |
+| Developer | Quanli Li |
+| Plugin / marketplace ID | `codex-quota-monitor@codex-quota-monitor` |
+
+The official general guide is [Plugins in ChatGPT](https://learn.chatgpt.com/docs/plugins). Desktop menu labels may vary by build.
 
 From the repository root, start the independent panel:
 
@@ -66,8 +120,25 @@ node plugins/codex-quota-monitor/server/launcher.mjs
 In a second terminal, add the local marketplace to Codex and install the plugin:
 
 ```bash
+codex plugin marketplace add https://github.com/tristan-me/codex-quota-monitor
+codex plugin add codex-quota-monitor@codex-quota-monitor
+```
+
+### Optional: local registration and an independent launcher after cloning
+
+If you have downloaded or cloned the [GitHub repository](https://github.com/tristan-me/codex-quota-monitor), register the local marketplace:
+
+```bash
+git clone https://github.com/tristan-me/codex-quota-monitor
+cd codex-quota-monitor
 codex plugin marketplace add "$PWD"
 codex plugin add codex-quota-monitor@codex-quota-monitor
+```
+
+To open the independent local panel directly, double-click `Open-Monitor.command` on macOS or run:
+
+```bash
+node plugins/codex-quota-monitor/server/launcher.mjs
 ```
 
 Prefer the Codex CLI that is compatible with the desktop build. If PATH resolves to an older CLI, its App Server capabilities may not match the desktop configuration. Check `codex --version` before treating a compatibility error as a quota-data error.
@@ -77,6 +148,13 @@ After startup, open Codex Quota Monitor in Codex. The panel uses a local `127.0.
 Stop the background service with `node plugins/codex-quota-monitor/scripts/stop.mjs`. Turning off automation stops future changes; the restore button restores the original defaults only if no external edit conflicts.
 
 Live and demo state, credentials, and endpoints are isolated. Demo pages are explicitly marked as synthetic. Offline pages withdraw live values and explain how to reopen the launcher. Clean restarts reuse the saved loopback endpoint; an occupied port is reported without terminating another application.
+
+### Bookmark and local-URL FAQ
+
+- The panel URL contains a complete `#token` and works only on the same computer while the corresponding monitor service is running. Treat it as a local access credential and do not share it.
+- Closing the web page does not stop the background service, so the same bookmark can be reopened while the service is still running.
+- After a reboot or service stop, the old bookmark does not start anything. Run `Open-Monitor.command` again, or open the plugin from a new local conversation so the plugin can provide the current valid URL.
+- An HTTP bookmark does not launch the desktop app or start a stopped background service automatically.
 
 ## Privacy
 

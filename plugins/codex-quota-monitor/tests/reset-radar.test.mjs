@@ -111,6 +111,9 @@ function officialEvent(overrides = {}) {
 
 test("bundled reference exposes two public announcements and experimental forecast", () => {
   const radar = buildResetRadar({ reference: RESET_REFERENCE, now });
+  assert.equal(RESET_REFERENCE.confirmed.length, 2);
+  assert.equal(RESET_REFERENCE.last2.length, 2);
+  assert.equal(RESET_REFERENCE.events.length, 2);
   assert.equal(radar.confirmed.length, 2);
   assert.deepEqual(
     radar.confirmed.map((event) => event.id),
@@ -213,6 +216,24 @@ test("normalization keeps official reset announcements and excludes replies, ban
   }
 });
 
+test("long evidence excerpts are explicitly marked as truncated", () => {
+  const reference = normalizeReference(
+    {
+      timeline: rawTimeline([
+        officialEvent({
+          summary:
+            "Usage reset for every paid ChatGPT Work and Codex subscription after a long explanatory clause that must not be copied in full.",
+        }),
+      ]),
+      forecast: rawForecast(),
+    },
+    { now },
+  );
+  const excerpt = reference.confirmed[0].evidence[0].excerpt;
+  assert.ok(excerpt.endsWith("…"));
+  assert.ok(excerpt.split(/\s+/).length <= 10);
+});
+
 test("normalization accepts nested endpoint payloads and preserves raw probability fractions", () => {
   const reference = normalizeReference(
     {
@@ -302,6 +323,46 @@ test("an official window already fulfilled by the last reset is not reused", () 
   });
   assert.equal(radar.forecast.officialWindow, null);
   assert.equal(radar.forecast.windowStart, "2026-09-09T23:00:00.000Z");
+});
+
+test("legacy normalized state with forty events compacts to two and preserves a future official window", () => {
+  const current = normalizeReference(
+    {
+      timeline: rawTimeline([officialEvent()]),
+      forecast: rawForecast({
+        teased_window: {
+          label: "tomorrow morning",
+          start_at: "2026-09-09T01:00:00.000Z",
+          end_at: "2026-09-09T02:00:00.000Z",
+          time_zone: "UTC",
+        },
+      }),
+    },
+    { now },
+  );
+  const legacyEvents = Array.from({ length: 40 }, (_, index) => ({
+    ...current.confirmed[0],
+    id: `legacy-${index}`,
+    announcementAt: new Date(now - index * 60_000).toISOString(),
+  }));
+  const compacted = normalizeReference(
+    {
+      ...current,
+      confirmed: [legacyEvents[0]],
+      last2: [],
+      events: legacyEvents,
+    },
+    { now },
+  );
+  assert.equal(compacted.events.length, 2);
+  assert.deepEqual(
+    compacted.confirmed.map((event) => event.id),
+    ["legacy-0", "legacy-1"],
+  );
+  assert.equal(compacted.forecast.officialWindow.label, "tomorrow morning");
+  const radar = buildResetRadar({ reference: compacted, now });
+  assert.equal(radar.forecast.officialWindow.label, "tomorrow morning");
+  assert.equal(radar.forecast.windowStart, "2026-09-09T01:00:00.000Z");
 });
 
 test("fetchResetReference uses only public GET endpoints and normalizes both responses", async () => {

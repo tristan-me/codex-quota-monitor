@@ -5,12 +5,24 @@ const tools = [
   {
     name: "open_quota_monitor",
     description:
-      "Open the local Codex quota monitor. Per-session quota is explicitly estimated. Return its URL and use open_in_codex browser panel. Does not wait for upstream quota reads.",
+      "Open the local Codex quota monitor. Per-session quota is explicitly estimated. The result.url is the exact local URL: use that exact value with open_in_codex when available, and always include it unchanged as a clickable Markdown link in the final reply, even when the side panel opens. A stopped service is not started by a bookmark, and this tool does not open the native ChatGPT desktop window. Does not wait for upstream quota reads.",
     inputSchema: {
       type: "object",
       properties: { compact: { type: "boolean" } },
       additionalProperties: false,
     },
+    outputSchema: {
+      type: "object",
+      properties: {
+        url: { type: "string", description: "Exact local dashboard URL; preserve it verbatim in the final Markdown link." },
+        version: { type: "string" },
+        mode: { type: "string", enum: ["live"] },
+        dataSchema: { type: "integer", const: 2 },
+      },
+      required: ["url", "version", "mode", "dataSchema"],
+      additionalProperties: false,
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   },
   {
     name: "get_quota_snapshot",
@@ -45,6 +57,8 @@ async function handle(m) {
         protocolVersion: "2024-11-05",
         serverInfo: { name: "codex-quota-monitor", version: "0.2.0" },
         capabilities: { tools: {} },
+        instructions:
+          "For open_quota_monitor, preserve result.url exactly, use it with open_in_codex when available, and always include that exact URL as a clickable Markdown link in the final response. A bookmark works only while the same-machine service is running; it cannot start a stopped service or open the native ChatGPT desktop window.",
       };
     else if (m.method === "ping") result = {};
     else if (m.method === "tools/list") result = { tools };
@@ -69,7 +83,10 @@ async function handle(m) {
           settings: s.settings,
         };
       } else throw new Error("Unknown tool");
-      result = { content: [{ type: "text", text: JSON.stringify(value) }] };
+      result = {
+        structuredContent: value,
+        content: [{ type: "text", text: JSON.stringify(value) }],
+      };
     } else
       return send({
         id: m.id,

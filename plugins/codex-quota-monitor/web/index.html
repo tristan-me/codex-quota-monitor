@@ -229,7 +229,7 @@
               <h3 id="modelOverviewModelName">等待模型数据</h3>
               <span id="modelOverviewModelId" class="model-overview-id">—</span>
             </div>
-            <p id="modelOverviewBasis" class="model-overview-basis">来源说明等待数据。</p>
+            <div id="modelOverviewBasis" class="model-overview-basis"><p>来源说明等待数据。</p></div>
             <div id="modelOverviewList" class="model-overview-list" role="list" aria-label="模型速率总览"></div>
             <div class="model-overview-footer">
               <span id="modelOverviewSource">来源：等待数据</span>
@@ -288,16 +288,6 @@
               </div>
             </div>
             <div class="reset-radar-secondary">
-              <article id="confirmedGlobalResets" class="reset-radar-card">
-                <div class="reset-radar-card-header">
-                  <div>
-                    <p class="section-kicker">GLOBAL RESET HISTORY</p>
-                    <h3>最近 2 次官方重置完成公告</h3>
-                  </div>
-                  <span id="confirmedGlobalUpdated" class="panel-header-meta">等待数据</span>
-                </div>
-                <div id="confirmedGlobalResetList" class="confirmed-reset-list" role="list"></div>
-              </article>
               <article id="thirdPartyForecast" class="reset-radar-card">
                 <div class="reset-radar-card-header">
                   <div>
@@ -316,6 +306,16 @@
                 <p id="forecastCalculation" class="forecast-calculation">算法摘要：等待数据</p>
                 <p id="forecastReason" class="muted-copy">预测不承诺一定发生，也不代表官方信号。</p>
                 <div id="forecastEvidence" class="forecast-evidence"></div>
+              </article>
+              <article id="confirmedGlobalResets" class="reset-radar-card">
+                <div class="reset-radar-card-header">
+                  <div>
+                    <p class="section-kicker">GLOBAL RESET HISTORY</p>
+                    <h3>最近 2 次官方重置完成公告</h3>
+                  </div>
+                  <span id="confirmedGlobalUpdated" class="panel-header-meta">等待数据</span>
+                </div>
+                <div id="confirmedGlobalResetList" class="confirmed-reset-list" role="list"></div>
               </article>
             </div>
             <div class="reference-links" aria-label="外部参考">

@@ -4,6 +4,36 @@ Codex Quota Monitor 是一个本地运行的 v0.2.0 beta 插件，用来观察 C
 
 [English README](./README.en.md) · [诊断指南](./docs/diagnosis.md)
 
+## 快速启动
+
+前提：使用支持本地插件的 ChatGPT/Codex 桌面版本，并安装 Node.js `>=22.13.0` 与兼容的 Codex CLI。
+
+如果希望让 Codex 代为安装并启动，复制下面这句话发送给 Codex：
+
+```text
+请安装并启动这个插件，完成后在聊天中给出可点击的网址：https://github.com/tristan-me/codex-quota-monitor
+```
+
+安装完成后，在一个新的本地 Codex 会话中输入“@”，从候选列表选择 **Codex Quota Monitor**，然后发送：`打开 Codex 额度监控器。`
+
+下面是用户要发送的完整 Markdown mention 文本：
+
+```markdown
+[@Codex Quota Monitor](plugin://codex-quota-monitor@codex-quota-monitor) 打开 Codex 额度监控器。
+```
+
+实际使用时请在输入框键入 `@` 并选择插件；直接粘贴这段 Markdown 不保证会被桌面端解析成有效 mention。
+
+本教程包含安装命令回放和桌面操作文字指引，目前不包含本插件的原生设置页截图或桌面录屏；面板截图使用合成/公开参考数据。
+
+## 安装与打开教程
+
+[![安装与打开教程动图](docs/media/codex-quota-monitor-cli-tutorial.gif)](docs/media/codex-quota-monitor-cli-tutorial.mp4)
+
+[查看/下载 50 秒 MP4](docs/media/codex-quota-monitor-cli-tutorial.mp4) · [配套文字命令](#安装与本地运行) · [回放说明与执行记录](docs/tutorials/README.md)
+
+视频展示本地来源注册、安装、确认启用、新会话选择插件和收藏面板，并列出 GitHub 远程来源的可选命令。本地注册与安装已在独立配置中验证；桌面操作为文字指引。远程下载在本次机器的网络环境中未完成验证，视频没有将它标为已成功执行。
+
 ## 界面预览
 
 以下截图中的账户、会话和消耗速率均为合成示例；重置公告与第三方预测是截图时的公开参考数据，不代表当前预测。
@@ -57,23 +87,51 @@ Codex Reset 的公开时间线与预测接口每 15 分钟各读取一次，约 
 
 自动切换模式是可选的，必须由用户在界面中明确开启。启用后只写入默认 `model` 和 `model_reasoning_effort`，作用于下一次新任务；不会接管已经运行的任务，也不会宣称它一定是性价比最高或官方最优方案。外部参考来源：[Codex Radar](https://codexradar.com/#model-ratings)、[Codex Reset](https://codex-reset.com/zh/)。
 
+项目代码采用 MIT；第三方参考数据、公开接口返回和原帖文字的权利归各来源权利人所有。公开接口不等于开放数据许可，详见[第三方来源与许可说明](./THIRD_PARTY_NOTICES.md)。
+
 插件不拦截 composer 输入、不代替用户提交 turn，也不承诺修复 `failed to submit turn input: EmptyInput`。遇到该错误请先按[诊断指南](./docs/diagnosis.md)区分宿主 Codex、CLI/App Server 和本地面板的问题。
 
 ## 安装与本地运行
 
-要求：Node.js `>=22.13.0`。运行时不需要 npm 依赖；Node 22.13 的 `node:sqlite` 仍处于实验状态，但在本项目中受支持。
+要求：支持本地插件的 ChatGPT/Codex 桌面版本、Node.js `>=22.13.0`，以及与桌面版本兼容的 Codex CLI。运行时不需要 npm 依赖；Node 22.13 的 `node:sqlite` 仍处于实验状态，但在本项目中受支持。
 
-先下载或克隆 [GitHub 仓库](https://github.com/tristan-me/codex-quota-monitor)。macOS 可以双击 `Open-Monitor.command`；也可以从仓库根目录运行独立面板：
+### 推荐：从已安装的 ChatGPT/Codex 桌面端开始
+
+在新本地会话中使用上面的快速启动提示，或者在可访问 GitHub 的终端执行：
+
+```bash
+codex plugin marketplace add https://github.com/tristan-me/codex-quota-monitor
+codex plugin add codex-quota-monitor@codex-quota-monitor
+```
+
+安装完成后，在桌面端打开“设置 → 插件”，确认 **Codex Quota Monitor** 已启用。然后新建本地会话，输入 `@` 并选择插件，再发送 `打开 Codex 额度监控器。`；插件会启动本机服务，并在聊天中返回可点击的当前有效 URL。
+
+可以用下列清单字段识别插件；这张表来自插件配置，不是原生设置页截图：
+
+| 字段 | 内容 |
+| --- | --- |
+| 显示名称 | Codex Quota Monitor |
+| 简介 | 本地会话额度估算与实时速率 |
+| 开发者 | Quanli Li |
+| 插件 / 来源标识 | `codex-quota-monitor@codex-quota-monitor` |
+
+官方通用插件安装说明见 [Plugins in ChatGPT](https://learn.chatgpt.com/docs/plugins)；桌面端菜单名称可能随版本变化。
+
+### 可选：已 clone 后的本地注册与独立入口
+
+如果你已经下载或克隆了 [GitHub 仓库](https://github.com/tristan-me/codex-quota-monitor)，可以从本地目录注册 marketplace：
+
+```bash
+git clone https://github.com/tristan-me/codex-quota-monitor
+cd codex-quota-monitor
+codex plugin marketplace add "$PWD"
+codex plugin add codex-quota-monitor@codex-quota-monitor
+```
+
+需要单独打开本地面板时，macOS 可以双击仓库根目录的 `Open-Monitor.command`，或者运行：
 
 ```bash
 node plugins/codex-quota-monitor/server/launcher.mjs
-```
-
-再在另一个终端把本地 marketplace 加入 Codex，并安装插件：
-
-```bash
-codex plugin marketplace add "$PWD"
-codex plugin add codex-quota-monitor@codex-quota-monitor
 ```
 
 优先使用与桌面版兼容的内置 Codex CLI。若系统 PATH 中存在更旧的 CLI，插件的 App Server 能力可能与桌面版配置不匹配；请先检查 `codex --version`，不要把版本差异当成额度数据问题。
@@ -91,6 +149,13 @@ node plugins/codex-quota-monitor/scripts/stop.mjs
 ```
 
 本地数据默认位于 `~/.local/share/codex-quota-monitor-v2`。可用 `CODEX_QUOTA_MONITOR_DATA_DIR` 覆盖；用 `CODEX_QUOTA_MONITOR_CODEX_BIN` 指定与桌面兼容的 Codex 可执行文件。
+
+### 书签与本地 URL FAQ
+
+- 面板 URL 含有完整的 `#token`，只在同一台电脑、对应监控服务仍运行时有效；请把它当作本地访问凭据，不要公开分享。
+- 关闭网页不会停止后台服务，因此服务仍运行时可以再次打开同一书签。
+- 电脑重启或服务停止后，原书签不会自启动；请再次运行 `Open-Monitor.command`，或从新的本地会话打开插件，让插件提供当前有效 URL。
+- HTTP 书签不会自动启动桌面应用，也不会自动拉起已停止的后台服务。
 
 ## 隐私
 

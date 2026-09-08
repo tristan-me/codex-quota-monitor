@@ -321,6 +321,11 @@
     return ['running', 'active', 'thinking', 'in_progress', 'inprogress', 'processing', 'working', 'started'].includes(normalized);
   }
 
+  function isFinishedStatus(status) {
+    const normalized = String(status || '').toLowerCase().replace(/[\s-]+/g, '_');
+    return ['completed', 'complete', 'succeeded', 'success', 'failed', 'failure', 'interrupted', 'aborted', 'cancelled', 'canceled', 'error', 'done', 'idle'].includes(normalized);
+  }
+
   function isUnknownStatus(status) {
     if (status === null || status === undefined || String(status).trim() === '') return true;
     return ['unknown', 'unavailable', 'indeterminate'].includes(String(status).toLowerCase());
@@ -657,12 +662,12 @@
       row.append(meta);
 
       const elapsed = finiteNumber(session.elapsedSeconds);
-    const estimate = sessionEstimatedPercent(session);
+      const estimate = sessionEstimatedPercent(session);
       const active = isCurrentlyRunning(session.status);
       const activeSpeed = finiteNumber(session.secondsPerPercent);
       const averageSpeed = finiteNumber(session.averageSecondsPerPercent);
       const speed = active ? activeSpeed : averageSpeed;
-      const speedLabel = active ? '每下降 1% 耗时' : '每下降 1% 平均耗时';
+      const speedLabel = isFinishedStatus(session.status) ? '每下降 1% 平均耗时' : '每下降 1% 预计耗时';
       const statLine = document.createElement('p');
       statLine.className = 'session-stat-line';
       const statParts = [
@@ -744,7 +749,7 @@
             childLine.textContent = [
               `已处理 ${childElapsed === null ? '—' : formatDuration(childElapsed)}`,
               `已消耗估算 ${childEstimate === null ? '—' : formatPercent(childEstimate)}`,
-              `${childActive ? '每下降 1% 耗时' : '每下降 1% 平均耗时'} ${childRate === null || childRate <= 0 ? '—' : formatDuration(childRate, '—')}`,
+              `${isFinishedStatus(child.status) ? '每下降 1% 平均耗时' : '每下降 1% 预计耗时'} ${childRate === null || childRate <= 0 ? '—' : formatDuration(childRate, '—')}`,
             ].join(' · ');
             childLine.title = finiteNumber(child.observationSeconds) > 0 ? `已观测活跃时长 ${formatDuration(child.observationSeconds)}` : '尚无可用的观测计时';
             childRow.append(childLine);
@@ -1033,8 +1038,15 @@
           record.efforts.push(effort);
           sourceGroups.set(key, record);
         });
-        const basisText = [...sourceGroups.values()].map((record) => `${record.efforts.join('/')}：${record.phrase}`).join('；');
-        setText('modelOverviewBasis', basisText || '来源说明等待数据。', '来源说明等待数据。');
+        const basisElement = $('modelOverviewBasis');
+        if (basisElement) {
+          basisElement.replaceChildren();
+          if (sourceGroups.size === 0) {
+            basisElement.append(textElement('p', '', '来源说明等待数据。'));
+          } else {
+            sourceGroups.forEach((record) => basisElement.append(textElement('p', 'model-overview-basis-group', `${record.efforts.join('/')}：${record.phrase}`)));
+          }
+        }
         activeGroup.rows.forEach((row) => {
           const item = document.createElement('article');
           item.className = 'model-overview-row';
@@ -1061,7 +1073,12 @@
         });
       }
     }
-    if (!activeGroup) setText('modelOverviewBasis', '来源说明等待数据。', '来源说明等待数据。');
+    if (!activeGroup) {
+      const basisElement = $('modelOverviewBasis');
+      if (basisElement) {
+        basisElement.replaceChildren(textElement('p', '', '来源说明等待数据。'));
+      }
+    }
     const updated = parseDate(overview.updatedAt);
     setText('modelOverviewUpdated', updated ? `更新于 ${formatDate(updated)}` : '等待数据', '等待数据');
     setText('modelOverviewNote', safeText(overview.note, '模型速率只用于横向参考，不把 API 美元成本换算成订阅百分比。'), '模型速率只用于横向参考，不把 API 美元成本换算成订阅百分比。');

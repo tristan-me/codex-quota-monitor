@@ -1,0 +1,54 @@
+CLI execution replay evidence (sanitized)
+===============================================
+Recording type: command execution replay, not desktop UI recording.
+Real credentials, real account data, and real task IDs were not read.
+
+Environment
+-----------
+$ codex --version
+codex-cli 0.144.3
+
+Remote marketplace route — attempted in isolated temporary CODEX_HOME
+---------------------------------------------------------------------
+$ codex plugin marketplace add https://github.com/tristan-me/codex-quota-monitor
+Error: git clone https://github.com/tristan-me/codex-quota-monitor.git failed with status 128
+fatal: unable to access the public GitHub URL: network connection failed in this runner
+RESULT: not installed in this attempt; the tutorial labels remote installation as unverified on this network. A later isolated retry with network access timed out after 45 seconds.
+
+$ codex plugin add codex-quota-monitor@codex-quota-monitor
+Error: plugin `codex-quota-monitor` was not found in marketplace `codex-quota-monitor`
+RESULT: expected follow-on failure because the preceding marketplace add failed.
+
+Local marketplace route — executed successfully in isolated temporary CODEX_HOME
+--------------------------------------------------------------------------------
+$ codex plugin marketplace add <local checkout>
+Added marketplace `codex-quota-monitor` from <local checkout>.
+Installed marketplace root: <local checkout>
+
+$ codex plugin add codex-quota-monitor@codex-quota-monitor
+Added plugin `codex-quota-monitor` from marketplace `codex-quota-monitor`.
+Installed plugin root: <isolated CODEX_HOME>/plugins/cache/.../0.2.0+codex...
+
+$ codex plugin list
+Marketplace `codex-quota-monitor`
+codex-quota-monitor@codex-quota-monitor  installed, enabled
+RESULT: success was limited to the isolated temporary CODEX_HOME.
+
+Clone route — teaching commands, not falsely reported as executed here
+-----------------------------------------------------------------------
+$ git clone https://github.com/tristan-me/codex-quota-monitor.git ~/src/codex-quota-monitor
+$ cd ~/src/codex-quota-monitor
+$ codex plugin marketplace add "$PWD"
+$ codex plugin add codex-quota-monitor@codex-quota-monitor
+
+Launcher commands — teaching commands, live route not executed in this evidence run
+------------------------------------------------------------------------------------
+$ ./Open-Monitor.command
+$ node plugins/codex-quota-monitor/server/launcher.mjs
+These commands start the real local-account monitor when intentionally run by the user.
+
+Synthetic preview — executed separately, no browser opened
+------------------------------------------------------------
+$ CODEX_QUOTA_MONITOR_PREVIEW_DIR=<isolated demo> node plugins/codex-quota-monitor/scripts/readme-preview.mjs
+DEMO ONLY — synthetic README preview
+No browser was opened. The demo process was stopped after verification.

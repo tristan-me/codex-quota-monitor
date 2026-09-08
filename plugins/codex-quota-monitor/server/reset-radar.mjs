@@ -16,7 +16,10 @@ export const RESET_REFRESH_INTERVAL_MS = 15 * 60 * 1000;
 export const RESET_ENDPOINT_REQUEST_COUNT = 2;
 export const RESET_REFERENCE = bundledReference;
 
-const MAX_EVENTS = 50;
+// The UI and persisted reference only need the two latest public completion
+// announcements. Older state files may still contain a longer `events` list;
+// normalization below deliberately compacts that legacy shape.
+const MAX_EVENTS = 2;
 const MAX_EXCERPT_WORDS = 10;
 const UTC_TIMEZONE_NAMES = new Set(["utc", "etc/utc", "gmt", "z"]);
 const NOTES = [
@@ -150,7 +153,8 @@ function excerptFor(summary) {
   const candidate = relevant || nonLyrics[0];
   if (!candidate || hasLyricText(candidate)) return "官方重置动态";
   const words = candidate.split(/\s+/).filter(Boolean);
-  return words.slice(0, MAX_EXCERPT_WORDS).join(" ") || "官方重置动态";
+  if (words.length <= MAX_EXCERPT_WORDS) return candidate;
+  return `${words.slice(0, MAX_EXCERPT_WORDS).join(" ")}…`;
 }
 
 function reasonFor(event) {
@@ -510,18 +514,38 @@ function cloneEvent(event) {
 function isNormalizedReference(value) {
   return (
     isRecord(value) &&
-    Array.isArray(value.confirmed) &&
+    (Array.isArray(value.confirmed) ||
+      Array.isArray(value.last2) ||
+      Array.isArray(value.events)) &&
     isRecord(value.forecast) &&
     typeof value.schema === "number"
   );
 }
 
+function compactEvents(value) {
+  const candidates = [
+    ...(Array.isArray(value.confirmed) ? value.confirmed : []),
+    ...(Array.isArray(value.last2) ? value.last2 : []),
+    ...(Array.isArray(value.events) ? value.events : []),
+  ];
+  const seen = new Set();
+  return candidates
+    .filter(isRecord)
+    .map(cloneEvent)
+    .filter((event) => {
+      const key = event.id || `${event.announcementAt || ""}|${event.eventAt || ""}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .sort(sortNewest)
+    .slice(0, MAX_EVENTS);
+}
+
 function normalizedReferenceCopy(value, now) {
   const fetchedAt = iso(value.fetchedAt) || iso(value.updatedAt) || now;
-  const confirmed = value.confirmed.map(cloneEvent).slice(0, 2);
-  const events = (Array.isArray(value.events) ? value.events : confirmed)
-    .map(cloneEvent)
-    .slice(0, MAX_EVENTS);
+  const confirmed = compactEvents(value);
+  const events = confirmed.map(cloneEvent);
   return {
     schema: 2,
     sourceUrl: safeUrl(value.sourceUrl, RESET_TIMELINE_URL),

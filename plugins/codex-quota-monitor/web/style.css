@@ -1353,12 +1353,16 @@ button:disabled {
 .model-overview-basis {
   min-height: 17px;
   margin: 0 0 10px;
-  overflow: hidden;
   color: var(--muted);
   font-size: 10px;
   line-height: 1.5;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.model-overview-basis-group {
+  margin: 0 0 4px;
+  overflow-wrap: anywhere;
 }
 
 .model-overview-row {
