@@ -80,3 +80,9 @@ The monitor does not read authentication files. The legacy adapter reads a bound
 Stop the background service with `node plugins/codex-quota-monitor/scripts/stop.mjs`. Turning off automation stops future changes; the restore button restores the original defaults only if no external edit conflicts.
 
 Live and demo state, credentials, and endpoints are isolated. Demo pages are explicitly marked as synthetic. Offline pages withdraw live values and explain how to reopen the launcher. Clean restarts reuse the saved loopback endpoint; an occupied port is reported without terminating another application.
+
+## Session browsing and model overview
+
+The right-edge table of contents expands on hover or keyboard focus. Sessions support title keywords, exact IDs, five-row pagination, incremental expansion, and child-thread details. Search and expansion survive refreshes. Known session allocations survive quota resets; missing historical observations are not invented. Completed tasks use measured average rates when timing evidence exists.
+
+Model overview uses a dated Codex Radar DeepSWE reference snapshot together with local observations. API-equivalent benchmark cost is not subscription quota billing. Spark's separate quota pool is not extrapolated from the main Codex pool.

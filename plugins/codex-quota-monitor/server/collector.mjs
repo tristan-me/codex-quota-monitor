@@ -6,6 +6,7 @@ import { LocalReader } from "./local-reader.mjs";
 import { CodexAppServerClient } from "./app-server-client.mjs";
 import { Estimator, accountDisplay, mainWindow } from "./metrics.mjs";
 import { recommend } from "./recommend.mjs";
+import { buildModelOverview } from "./model-overview.mjs";
 
 export const DEFAULT_SETTINGS = {
   pollSeconds: 5,
@@ -165,7 +166,11 @@ export class Collector {
         this.diagnostics.push(
           "历史发现达到上限；近期运行线程另外补入，旧任务可能未全部覆盖。",
         );
-      this.estimator.local(this.threads, Date.now());
+      this.estimator.local(
+        this.threads,
+        Date.now(),
+        Math.max(10000, this.settings.pollSeconds * 3000),
+      );
     } catch (error) {
       this.diagnostics = ["本地状态读取失败：" + errorText(error)];
       this.threads = this.threads.map((thread) => ({
@@ -476,8 +481,17 @@ export class Collector {
       .sessions(this.threads, now)
       .map((session) => ({
         ...session,
-        observationSince: state.since,
-        ...(this.settings.paused || stale ? { secondsPerPercent: null } : {}),
+        observationSince: state.sessionTrackingSince || state.since,
+        ...(this.settings.paused || stale
+          ? {
+              secondsPerPercent: null,
+              ownSecondsPerPercent: null,
+              children: (session.children || []).map((child) => ({
+                ...child,
+                secondsPerPercent: null,
+              })),
+            }
+          : {}),
       }));
     const rate = sessions.reduce(
       (sum, task) =>
@@ -518,6 +532,12 @@ export class Collector {
           "模型列表/逐任务能力探测各每小时一次；失败时最短一分钟重试。计数是 RPC 调用，不是底层 HTTP 包数。",
       },
       recommendation: this.recommendation,
+      modelOverview: buildModelOverview({
+        models: this.models,
+        sessions,
+        state,
+        now,
+      }),
       capabilities: {
         nativeInline: false,
         windowPopup: false,

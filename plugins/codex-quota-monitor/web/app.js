@@ -22,6 +22,11 @@
     disclaimerSaving: false,
     reminderSaving: false,
     compact: false,
+    sessionQuery: '',
+    sessionPage: 0,
+    sessionPageSize: 5,
+    expandedSessionIds: new Set(),
+    sessionAutoCollapsedIds: new Set(),
     resetBaseSeconds: null,
     resetBaseAt: null,
     resetScheduledAt: null,
@@ -82,15 +87,15 @@
     return parsed === null ? '—' : parsed.toFixed(3);
   }
 
-  function formatDuration(value, empty = '等待采样') {
+  function formatDuration(value, empty = '—') {
     const parsed = finiteNumber(value);
     if (parsed === null || parsed < 0) return empty;
     const totalSeconds = Math.floor(parsed);
     const hours = Math.floor(totalSeconds / 3600);
     const minutes = Math.floor((totalSeconds % 3600) / 60);
     const seconds = totalSeconds % 60;
-    if (hours > 0) return `${hours}小时 ${minutes}分钟 ${seconds}秒`;
-    return `${minutes}分钟 ${seconds}秒`;
+    if (totalSeconds < 60) return `${seconds}秒`;
+    return hours > 0 ? `${hours}时${minutes}分${seconds}秒` : `${minutes}分${seconds}秒`;
   }
 
   function formatShortDuration(value, empty = '等待数据') {
@@ -304,6 +309,11 @@
   function isActiveStatus(status) {
     const normalized = String(status || '').toLowerCase().replace(/[\s-]+/g, '_');
     return ['running', 'active', 'thinking', 'in_progress', 'inprogress', 'processing', 'working', 'started', 'pending', 'queued'].includes(normalized);
+  }
+
+  function isCurrentlyRunning(status) {
+    const normalized = String(status || '').toLowerCase().replace(/[\s-]+/g, '_');
+    return ['running', 'active', 'thinking', 'in_progress', 'inprogress', 'processing', 'working', 'started'].includes(normalized);
   }
 
   function isUnknownStatus(status) {
@@ -527,23 +537,83 @@
       : `接口报告倍率 ${multiplier.toFixed(3)}x；官方百分比和重置仍直接取额度接口。`, '接口未提供倍率信息。');
   }
 
+  function sessionQueryTokens(query) {
+    return String(query || '').split(/[\s,，]+/).map((token) => token.trim()).filter(Boolean);
+  }
+
+  function sessionMatches(session, tokens) {
+    if (!tokens.length) return false;
+    const title = safeText(session.title, '').toLocaleLowerCase();
+    const id = safeText(session.id, '');
+    return tokens.some((token) => title.includes(token.toLocaleLowerCase()) || id === token);
+  }
+
+  function sessionEstimatedPercent(session) {
+    const status = safeText(session.estimateStatus, '').toLowerCase();
+    if (status === 'unavailable' || status === 'projected') return null;
+    return finiteNumber(session.estimatedPercent);
+  }
+
+  function sessionFilterEntries(sessions, tokens) {
+    return sessions.map((root) => {
+      const children = Array.isArray(root.children) ? root.children.filter((child) => isRecord(child)) : [];
+      const rootMatches = sessionMatches(root, tokens);
+      const matchingChildren = tokens.length ? children.filter((child) => sessionMatches(child, tokens)) : [];
+      if (tokens.length && !rootMatches && matchingChildren.length === 0) return null;
+      return { root, children, rootMatches, matchingChildren };
+    }).filter(Boolean);
+  }
+
+  function renderSessionPagination(filteredCount, totalCount) {
+    const pageSize = state.sessionPageSize;
+    const pages = Math.max(1, Math.ceil(filteredCount / pageSize));
+    state.sessionPage = Math.min(Math.max(0, state.sessionPage), pages - 1);
+    const prev = $('sessionPrev');
+    const next = $('sessionNext');
+    const expand = $('sessionExpandMore');
+    const reset = $('sessionResetPageSize');
+    const pageInfo = $('sessionPageInfo');
+    if (prev) prev.disabled = state.sessionPage <= 0 || filteredCount === 0;
+    if (next) next.disabled = state.sessionPage >= pages - 1 || filteredCount === 0;
+    if (expand) {
+      expand.disabled = pageSize >= filteredCount || filteredCount === 0;
+      expand.hidden = filteredCount === 0;
+    }
+    if (reset) reset.hidden = pageSize <= 5;
+    if (pageInfo) pageInfo.textContent = filteredCount === 0 ? '无匹配会话' : `第 ${state.sessionPage + 1} / ${pages} 页 · 每页 ${pageSize}`;
+    setText('sessionFilterSummary', filteredCount === totalCount ? `共 ${totalCount} 个根会话` : `匹配 ${filteredCount} / ${totalCount} 个根会话`, '显示全部会话');
+  }
+
   function renderSessionList(snapshot) {
     const list = $('sessionList');
     if (!list) return;
     list.replaceChildren();
     const sessions = sessionsFrom(snapshot);
+    const searchInput = $('sessionSearch');
+    if (searchInput && searchInput.value !== state.sessionQuery && document.activeElement !== searchInput) searchInput.value = state.sessionQuery;
     setText('sessionSummaryText', summaryStatus(snapshot), '等待会话样本');
     const settings = getSettings(snapshot);
     setText('sessionRefreshHint', `每 ${settings.pollSeconds} 秒更新`, '每 5 秒更新');
     if (!sessions) {
-      list.append(textElement('div', 'empty-state', '等待本地会话快照 · 不会虚构消耗数值'));
+      list.append(textElement('div', 'empty-state', '等待本地会话快照'));
+      renderSessionPagination(0, 0);
       return;
     }
     if (sessions.length === 0) {
-      list.append(textElement('div', 'empty-state', '当前没有可显示会话 · 等待 Codex 活跃会话采样'));
+      list.append(textElement('div', 'empty-state', '当前没有可显示会话'));
+      renderSessionPagination(0, 0);
       return;
     }
-    sessions.forEach((session, index) => {
+    const tokens = sessionQueryTokens(state.sessionQuery);
+    const entries = sessionFilterEntries(sessions, tokens);
+    renderSessionPagination(entries.length, sessions.length);
+    if (entries.length === 0) {
+      list.append(textElement('div', 'empty-state', '没有匹配的会话 · 可清除搜索条件'));
+      return;
+    }
+    const start = state.sessionPage * state.sessionPageSize;
+    entries.slice(start, start + state.sessionPageSize).forEach((entry, index) => {
+      const session = entry.root;
       const row = document.createElement('article');
       row.className = 'session-row';
       row.setAttribute('role', 'listitem');
@@ -552,10 +622,14 @@
       header.className = 'session-row-header';
       const titleBlock = document.createElement('div');
       titleBlock.className = 'session-title-block';
-      const title = textElement('h3', 'session-title', session.title || `未命名会话 ${index + 1}`);
+      const titleValue = safeText(session.title, `未命名会话 ${start + index + 1}`);
+      const title = textElement('h3', 'session-title', titleValue);
+      title.title = titleValue;
       titleBlock.append(title);
-      const identity = safeText(session.id, 'ID 未提供');
-      titleBlock.append(textElement('span', 'session-id', identity));
+      const identity = safeText(session.id, '—');
+      const idElement = textElement('span', 'session-id', identity);
+      idElement.title = identity;
+      titleBlock.append(idElement);
       header.append(titleBlock);
       const status = textElement('span', `status-chip ${statusClass(session.status)}`, statusLabel(session.status));
       header.append(status);
@@ -563,9 +637,11 @@
 
       const meta = document.createElement('div');
       meta.className = 'session-meta';
-      const model = safeText(session.model, '模型待定');
-      const effort = safeText(session.reasoningEffort, '推理强度待定');
-      meta.append(textElement('span', 'meta-item', model));
+      const model = safeText(session.model, '—');
+      const effort = safeText(session.reasoningEffort, '—');
+      const modelElement = textElement('span', 'meta-item meta-title', model);
+      modelElement.title = model;
+      meta.append(modelElement);
       meta.append(textElement('span', 'meta-separator', '·'));
       meta.append(textElement('span', 'meta-item', effort));
       const childCount = finiteNumber(session.childCount);
@@ -576,29 +652,102 @@
       row.append(meta);
 
       const elapsed = finiteNumber(session.elapsedSeconds);
-      const hasElapsedSample = elapsed !== null && elapsed > 0;
-      const estimate = finiteNumber(session.estimatedPercent);
-      const speed = finiteNumber(session.secondsPerPercent);
+    const estimate = sessionEstimatedPercent(session);
+      const active = isCurrentlyRunning(session.status);
+      const activeSpeed = finiteNumber(session.secondsPerPercent);
+      const averageSpeed = finiteNumber(session.averageSecondsPerPercent);
+      const speed = active ? activeSpeed : averageSpeed;
+      const speedLabel = active ? '每下降 1% 耗时' : '每下降 1% 平均耗时';
       const statLine = document.createElement('p');
       statLine.className = 'session-stat-line';
       const statParts = [
-        `已处理 ${hasElapsedSample ? formatDuration(elapsed) : '积累样本'}`,
-        `已消耗估算 ${estimate === null ? '积累样本' : formatPercent(estimate)}`,
-        `每下降 1% 耗时 ${speed === null || speed <= 0 ? '积累样本' : `${speed.toFixed(3)} 秒`}`,
+        `已处理 ${elapsed === null ? '—' : formatDuration(elapsed)}`,
+        `已消耗估算 ${estimate === null ? '—' : formatPercent(estimate)}`,
+        `${speedLabel} ${speed === null || speed <= 0 ? '—' : formatDuration(speed, '—')}`,
       ];
-      const credits = finiteNumber(session.estimatedCredits);
-      if (credits !== null) statParts.push(`估算 credits ${formatCredits(credits)}`);
-      statLine.textContent = `监控期间估算 · ${statParts.join(' · ')}`;
+      const observation = finiteNumber(session.observationSeconds);
+      const statuses = [];
+      statLine.textContent = statParts.join(' · ');
+      statLine.title = [observation === null ? '' : `观测 ${formatDuration(observation)}`, ...statuses].filter(Boolean).join(' · ');
       row.append(statLine);
 
-      const notes = document.createElement('div');
-      notes.className = 'session-notes';
-      const method = safeText(session.method, estimate === null ? '' : '本机 token 占比假设分摊；可能混入其他设备消耗');
-      const confidence = confidenceLabel(session.confidence) || (estimate === null ? '' : '置信度低');
-      if (method) notes.append(textElement('span', 'session-note', `方法：${method}`));
-      if (confidence) notes.append(textElement('span', 'session-note', confidence));
-      if (!isRootSession(session)) notes.append(textElement('span', 'session-note session-note-child', '子会话'));
-      if (notes.childNodes.length) row.append(notes);
+      const children = Array.isArray(session.children) ? session.children.filter((child) => isRecord(child)) : [];
+      if (children.length > 0) {
+        const key = safeText(session.id, session.title || `root-${start + index}`);
+        const matchingChildren = tokens.length ? children.filter((child) => sessionMatches(child, tokens)) : [];
+        const childSearchMatch = tokens.length > 0 && matchingChildren.length > 0;
+        const restrictToMatches = childSearchMatch && !sessionMatches(session, tokens);
+        const manuallyCollapsed = state.sessionAutoCollapsedIds.has(key);
+        const expanded = state.expandedSessionIds.has(key) || (childSearchMatch && !manuallyCollapsed);
+        const shownChildren = expanded ? (restrictToMatches ? matchingChildren : children) : [];
+        const toggle = document.createElement('button');
+        toggle.className = 'session-child-toggle button button-small button-quiet';
+        toggle.type = 'button';
+        toggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+        toggle.textContent = expanded
+          ? (restrictToMatches ? '收起匹配子会话' : '收起子会话')
+          : (matchingChildren.length ? `显示匹配子会话（${matchingChildren.length}）` : `展开子会话（${children.length}）`);
+        toggle.addEventListener('click', () => {
+          if (expanded) {
+            state.expandedSessionIds.delete(key);
+            if (childSearchMatch) state.sessionAutoCollapsedIds.add(key);
+          } else {
+            state.expandedSessionIds.add(key);
+            state.sessionAutoCollapsedIds.delete(key);
+          }
+          renderSessionList(state.snapshot || {});
+        });
+        row.append(toggle);
+        if (shownChildren.length > 0) {
+          const childList = document.createElement('div');
+          childList.className = 'session-child-list';
+          childList.setAttribute('role', 'list');
+          shownChildren.forEach((child, childIndex) => {
+            const childRow = document.createElement('article');
+            childRow.className = 'session-row session-row-child';
+            childRow.setAttribute('role', 'listitem');
+            const childTitle = safeText(child.title, `未命名子会话 ${childIndex + 1}`);
+            const childHeader = document.createElement('div');
+            childHeader.className = 'session-row-header';
+            const childTitleBlock = document.createElement('div');
+            childTitleBlock.className = 'session-title-block';
+            const childTitleElement = textElement('h3', 'session-title', childTitle);
+            childTitleElement.title = childTitle;
+            childTitleBlock.append(childTitleElement);
+            const childId = safeText(child.id, '—');
+            const childIdElement = textElement('span', 'session-id', childId);
+            childIdElement.title = childId;
+            childTitleBlock.append(childIdElement);
+            childHeader.append(childTitleBlock);
+            childHeader.append(textElement('span', `status-chip ${statusClass(child.status)}`, statusLabel(child.status)));
+            childRow.append(childHeader);
+            const childMeta = document.createElement('div');
+            childMeta.className = 'session-meta';
+            const childModel = safeText(child.model, '—');
+            const childModelElement = textElement('span', 'meta-item meta-title', childModel);
+            childModelElement.title = childModel;
+            childMeta.append(childModelElement);
+            childMeta.append(textElement('span', 'meta-separator', '·'));
+            childMeta.append(textElement('span', 'meta-item', safeText(child.reasoningEffort, '—')));
+            childRow.append(childMeta);
+            const childElapsed = finiteNumber(child.elapsedSeconds);
+            const childEstimate = sessionEstimatedPercent(child);
+            const childActive = isCurrentlyRunning(child.status);
+            const childRate = finiteNumber(childActive ? child.secondsPerPercent : child.averageSecondsPerPercent);
+            const childLine = document.createElement('p');
+            childLine.className = 'session-stat-line';
+            childLine.textContent = [
+              `已处理 ${childElapsed === null ? '—' : formatDuration(childElapsed)}`,
+              `已消耗估算 ${childEstimate === null ? '—' : formatPercent(childEstimate)}`,
+              `${childActive ? '每下降 1% 耗时' : '每下降 1% 平均耗时'} ${childRate === null || childRate <= 0 ? '—' : formatDuration(childRate, '—')}`,
+            ].join(' · ');
+            childLine.title = finiteNumber(child.observationSeconds) > 0 ? `已观测活跃时长 ${formatDuration(child.observationSeconds)}` : '尚无可用的观测计时';
+            childRow.append(childLine);
+            childList.append(childRow);
+          });
+          row.append(childList);
+        }
+      }
       list.append(row);
     });
   }
@@ -621,7 +770,9 @@
     const observed = finiteNumber(attribution.observedPercent);
     const estimated = finiteNumber(attribution.estimatedPercent);
     const unattributed = finiteNumber(attribution.unattributedPercent);
-    const attributedTotal = observed === null && estimated === null ? null : (observed || 0) + (estimated || 0);
+    const attributedTotal = observed !== null && observed > 0 && estimated !== null
+      ? Math.min(100, Math.max(0, (estimated / observed) * 100))
+      : null;
     setText('attributionTotal', attributedTotal === null ? '—' : formatPercent(attributedTotal), '—');
     setText('observedPercent', observed === null ? '—' : formatPercent(observed), '—');
     setText('estimatedPercent', estimated === null ? '—' : formatPercent(estimated), '—');
@@ -795,21 +946,104 @@
     setText('trendLatest', `最新 ${formatPercent(last.value)} · ${formatDate(last.at, '时间待定')}`, '等待历史样本');
   }
 
-  function renderRecommendation(snapshot) {
-    const recommendation = isRecord(snapshot) && isRecord(snapshot.recommendation) ? snapshot.recommendation : {};
-    setText('recommendedModel', safeText(recommendation.model, '等待建议'), '等待建议');
-    setText('recommendedEffort', safeText(recommendation.reasoningEffort, '—'), '—');
-    setText('recommendationReason', safeText(recommendation.reason, '后端返回建议后会显示理由和来源。'), '后端返回建议后会显示理由和来源。');
-    const source = safeText(recommendation.source, '等待数据');
-    const sourceElement = $('recommendationSource');
-    if (sourceElement) {
-      sourceElement.replaceChildren(textElement('span', '', `来源：${source}`));
+  function renderModelOverview(snapshot) {
+    const overview = isRecord(snapshot) && isRecord(snapshot.modelOverview) ? snapshot.modelOverview : {};
+    const list = $('modelOverviewList');
+    if (list) {
+      list.replaceChildren();
+      const rows = Array.isArray(overview.rows) ? overview.rows.filter((row) => isRecord(row)) : [];
+      if (rows.length === 0) {
+        list.append(textElement('div', 'empty-state model-overview-empty', '暂无模型速率数据 · 等待账户和观测样本'));
+      } else {
+        rows.forEach((row) => {
+          const item = document.createElement('article');
+          item.className = 'model-overview-row';
+          item.setAttribute('role', 'listitem');
+          const header = document.createElement('div');
+          header.className = 'model-overview-header';
+          const titleBlock = document.createElement('div');
+          titleBlock.className = 'model-overview-title-block';
+          const model = safeText(row.model, '—');
+          const displayName = safeText(row.displayName, model);
+          const title = textElement('h3', 'model-overview-title', displayName);
+          title.title = `${displayName}${model && model !== displayName ? ` · ${model}` : ''}`;
+          titleBlock.append(title);
+          if (model !== displayName) {
+            const modelId = textElement('span', 'model-overview-id', model);
+            modelId.title = model;
+            titleBlock.append(modelId);
+          }
+          header.append(titleBlock);
+          header.append(textElement('span', `status-chip ${row.available === true ? 'status-running' : 'status-unknown'}`, row.available === true ? '可用' : row.available === false ? '未确认' : '—'));
+          item.append(header);
+          const metrics = document.createElement('div');
+          metrics.className = 'model-overview-metrics';
+          const effort = safeText(row.effort || row.reasoningEffort, '—');
+          const seconds = finiteNumber(row.secondsPerPercent);
+          const quotaPerHour = finiteNumber(row.quotaPercentPerHour);
+          const referenceCost = finiteNumber(row.referenceCostPerHour);
+          const metricValues = [
+            ['推理强度', effort],
+            ['速度', seconds === null || seconds <= 0 ? '—' : `${formatDuration(seconds, '—')}/1%`],
+            ['额度速率', quotaPerHour === null ? '—' : `${quotaPerHour.toFixed(3)}%/时`],
+            ['API参考成本', referenceCost === null ? '—' : `$${referenceCost.toFixed(2)}/时`],
+          ];
+          metricValues.forEach(([label, value]) => {
+            const metric = document.createElement('div');
+            metric.className = 'model-overview-metric';
+            metric.append(textElement('span', '', label));
+            metric.append(textElement('strong', '', value));
+            metrics.append(metric);
+          });
+          item.append(metrics);
+          const sourceLine = document.createElement('p');
+          sourceLine.className = 'model-overview-source';
+          const sourceKind = safeText(row.sourceKind, '—');
+          const sourceLabel = safeText(row.sourceLabel, '来源待定');
+          const basis = safeText(row.rateBasis, '速率样本待定');
+          sourceLine.textContent = `${sourceLabel} · ${basis}`;
+          sourceLine.title = sourceLine.textContent;
+          item.append(sourceLine);
+          list.append(item);
+        });
+      }
     }
-    const error = recommendation.error ? safeError(recommendation.error) : '';
-    const errorElement = $('recommendationError');
-    if (errorElement) {
-      errorElement.textContent = error;
-      errorElement.hidden = !error;
+    const updated = parseDate(overview.updatedAt);
+    setText('modelOverviewUpdated', updated ? `更新于 ${formatDate(updated)}` : '等待数据', '等待数据');
+    setText('modelOverviewNote', safeText(overview.note, '模型速率只用于横向参考，不把 API 美元成本换算成订阅百分比。'), '模型速率只用于横向参考，不把 API 美元成本换算成订阅百分比。');
+    const source = safeText(overview.sourceUrl, '等待数据');
+    const sourceElement = $('modelOverviewSource');
+    if (sourceElement) {
+      sourceElement.replaceChildren();
+      let sourceUrl = null;
+      try {
+        const parsed = new URL(source);
+        if (parsed.protocol === 'https:' || parsed.protocol === 'http:') sourceUrl = parsed.href;
+      } catch (_error) {
+        sourceUrl = null;
+      }
+      if (sourceUrl) {
+        const link = document.createElement('a');
+        link.href = sourceUrl;
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+        link.textContent = `来源：${source}`;
+        sourceElement.append(link);
+      } else {
+        sourceElement.textContent = `来源：${source}`;
+      }
+    }
+    setText('modelOverviewReference', 'API参考成本仅作外部价格参考，不等于订阅额度百分比。', '— 表示无可用样本');
+  }
+
+  function renderRecommendation(snapshot) {
+    renderModelOverview(snapshot);
+    const choice = isRecord(snapshot.recommendation) ? snapshot.recommendation : {};
+    setText('defaultModelTarget', choice.model ? `默认目标：${choice.model} / ${safeText(choice.reasoningEffort, '—')}` : '默认目标尚未确定');
+    const choiceError = $('defaultModelError');
+    if (choiceError) {
+      choiceError.textContent = choice.error ? safeError(choice.error) : '';
+      choiceError.hidden = !choice.error;
     }
     const settings = getSettings(snapshot);
     const objective = $('objectiveSelect');
@@ -1136,11 +1370,25 @@
   }
 
   function bindControls() {
-    document.querySelectorAll('a[href="#main"], a[href="#settings"]').forEach(link => {
+    document.querySelectorAll('a[href="#main"], a[href="#settings"], [data-target]').forEach(link => {
       link.addEventListener('click', event => {
         event.preventDefault();
-        document.getElementById(link.getAttribute('href').slice(1))?.scrollIntoView({behavior:'smooth', block:'start'});
+        const targetId = link.dataset.target || link.getAttribute('href').slice(1);
+        document.getElementById(targetId)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
       });
+    });
+    const navToggle = $('sectionNavToggle');
+    const nav = $('sectionNav');
+    if (navToggle && nav) navToggle.addEventListener('click', () => {
+      const open = nav.classList.toggle('is-open');
+      navToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+    });
+    if (nav) nav.addEventListener('pointerleave', (event) => {
+      if (event.pointerType && event.pointerType !== 'mouse') return;
+      nav.classList.remove('is-open');
+      if (navToggle) navToggle.setAttribute('aria-expanded', 'false');
+      const focused = document.activeElement;
+      if (focused && nav.contains(focused) && !focused.matches(':focus-visible')) focused.blur();
     });
     const refresh = $('refreshBtn');
     const retry = $('retryBtn');
@@ -1163,6 +1411,47 @@
     if (autoSwitch) autoSwitch.addEventListener('change', () => queueSettingsPatch({ autoSwitch: autoSwitch.checked }));
     const restore = $('restoreDefaultsBtn');
     if (restore) restore.addEventListener('click', () => restoreDefaults());
+
+    const sessionSearch = $('sessionSearch');
+    if (sessionSearch) sessionSearch.addEventListener('input', () => {
+      state.sessionQuery = sessionSearch.value;
+      state.sessionPage = 0;
+      state.sessionAutoCollapsedIds.clear();
+      renderSessionList(state.snapshot || {});
+    });
+    const clearSearch = $('clearSessionSearch');
+    if (clearSearch) clearSearch.addEventListener('click', () => {
+      state.sessionQuery = '';
+      state.sessionPage = 0;
+      state.sessionAutoCollapsedIds.clear();
+      if (sessionSearch) {
+        sessionSearch.value = '';
+        sessionSearch.focus();
+      }
+      renderSessionList(state.snapshot || {});
+    });
+    const previous = $('sessionPrev');
+    if (previous) previous.addEventListener('click', () => {
+      state.sessionPage = Math.max(0, state.sessionPage - 1);
+      renderSessionList(state.snapshot || {});
+    });
+    const next = $('sessionNext');
+    if (next) next.addEventListener('click', () => {
+      state.sessionPage += 1;
+      renderSessionList(state.snapshot || {});
+    });
+    const expandMore = $('sessionExpandMore');
+    if (expandMore) expandMore.addEventListener('click', () => {
+      state.sessionPageSize += 5;
+      state.sessionPage = 0;
+      renderSessionList(state.snapshot || {});
+    });
+    const resetPageSize = $('sessionResetPageSize');
+    if (resetPageSize) resetPageSize.addEventListener('click', () => {
+      state.sessionPageSize = 5;
+      state.sessionPage = 0;
+      renderSessionList(state.snapshot || {});
+    });
   }
 
   function localStorageFlagIsSet() {

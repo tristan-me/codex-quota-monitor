@@ -25,3 +25,7 @@ Loopback network permission is needed by the HTTP tests. CI runs the same suite 
 ## Data-source repair validation
 
 The repair adds tests for official Pro account percentages without manual multipliers, second-to-millisecond reset conversion and Beijing time, partial quota-bucket responses, active-child elapsed time, stale quota gaps, reusable live endpoints, and isolation of demo credentials/state. The complete local suite passes 39 tests. Demo pages are no longer delivered as real-account outputs.
+
+## Session browser and model overview
+
+54 tests pass under Node 24 after adding session-ledger retention, child metrics, observed averages, independent quota-pool handling, and reciprocal-rate aggregation. Browser checks cover exact-ID and keyword search, filtered pagination, incremental five-row expansion, child match expansion/collapse, state retention across refresh, and a 380-pixel layout without horizontal overflow. Benchmark reference rows are dated public Codex Radar data; no user task data is bundled.

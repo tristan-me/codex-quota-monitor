@@ -39,6 +39,19 @@
       </div>
       <div id="demoWatermark" class="demo-watermark" hidden aria-hidden="true">演示数据<br><span>不是你的账户或任务</span></div>
 
+      <nav id="sectionNav" class="section-nav" aria-label="页面目录">
+        <button id="sectionNavToggle" class="section-nav-toggle" type="button" aria-expanded="false" aria-controls="sectionNavLinks" aria-label="展开页面目录">☰</button>
+        <div id="sectionNavLinks" class="section-nav-links">
+          <a href="#sessionsSection" data-target="sessionsSection" title="会话消耗"><span aria-hidden="true">◉</span><span>会话</span></a>
+          <a href="#accountSection" data-target="accountSection" title="账户窗口"><span aria-hidden="true">◌</span><span>账户</span></a>
+          <a href="#trendSection" data-target="trendSection" title="账户余量趋势"><span aria-hidden="true">⌁</span><span>趋势</span></a>
+          <a href="#modelSection" data-target="modelSection" title="模式总览"><span aria-hidden="true">◆</span><span>模式</span></a>
+          <a href="#resetSection" data-target="resetSection" title="重置预测"><span aria-hidden="true">↻</span><span>重置</span></a>
+          <a href="#settings" data-target="settings" title="刷新设置与成本"><span aria-hidden="true">⚙</span><span>设置</span></a>
+          <a href="#diagnosticsSection" data-target="diagnosticsSection" title="诊断"><span aria-hidden="true">✓</span><span>诊断</span></a>
+        </div>
+      </nav>
+
       <div id="globalError" class="notice notice-error" role="alert" hidden>
         <span class="notice-icon" aria-hidden="true">!</span>
         <span id="globalErrorText">暂时无法读取快照。</span>
@@ -59,9 +72,6 @@
           <div class="hero-copy">
             <p class="section-kicker">额度观察 · 本地估算</p>
             <h1 id="overview-title">看见每个会话的消耗节奏</h1>
-            <p class="hero-description">
-              先看账户官方窗口，再看监控期间的会话估算。运行中的任务会继续由 Codex 自己管理。
-            </p>
             <p class="hero-note">
               <span class="note-mark" aria-hidden="true">i</span>
               每会话百分比和速度是透明标注的估算值；三位小数是显示精度，不代表官方精确拆账。账户归因可能按本机 token 占比假设分摊，可能混入其他设备消耗。
@@ -101,7 +111,7 @@
         </div>
 
         <div id="dashboardGrid" class="dashboard-grid full-dashboard data-card">
-          <section class="panel sessions-panel panel-wide" aria-labelledby="sessions-title">
+          <section id="sessionsSection" class="panel sessions-panel panel-wide" aria-labelledby="sessions-title">
             <div class="panel-header">
               <div>
                 <p class="section-kicker">LIVE SESSIONS</p>
@@ -109,15 +119,30 @@
               </div>
               <span id="sessionRefreshHint" class="panel-header-meta">每 5 秒更新</span>
             </div>
-            <p class="panel-note">会话百分比和速率仅代表监控期间的透明估算，不与账户官方剩余百分比直接相减。</p>
+            <p class="panel-note">会话百分比和速率仅代表监控期间的透明估算；— 表示无可用样本，不表示 0 消耗。</p>
+            <div class="session-tools">
+              <label class="session-search-label" for="sessionSearch">筛选会话</label>
+              <div class="session-search-control">
+                <input id="sessionSearch" type="search" autocomplete="off" spellcheck="false" placeholder="标题关键词或完整 ID；空格/逗号分隔">
+                <button id="clearSessionSearch" class="button button-small button-quiet" type="button">清除</button>
+              </div>
+              <span id="sessionFilterSummary" class="session-filter-summary" role="status" aria-live="polite">显示全部会话</span>
+            </div>
             <div id="sessionSummary" class="summary-strip" aria-live="polite">
               <span class="summary-dot" aria-hidden="true"></span>
               <span id="sessionSummaryText">正在等待会话快照</span>
             </div>
             <div id="sessionList" class="session-list" role="list" aria-label="Codex 会话列表"></div>
+            <div class="session-pagination" aria-label="会话分页">
+              <button id="sessionPrev" class="button button-small button-quiet" type="button">上一页</button>
+              <span id="sessionPageInfo" class="session-page-info">第 1 页</span>
+              <button id="sessionNext" class="button button-small button-quiet" type="button">下一页</button>
+              <button id="sessionExpandMore" class="button button-small button-quiet" type="button">再展开5个</button>
+              <button id="sessionResetPageSize" class="button button-small button-quiet" type="button" hidden>恢复每页5个</button>
+            </div>
           </section>
 
-          <section class="panel account-panel" aria-labelledby="account-title">
+          <section id="accountSection" class="panel account-panel" aria-labelledby="account-title">
             <div class="panel-header">
               <div>
                 <p class="section-kicker">ACCOUNT WINDOWS</p>
@@ -172,7 +197,7 @@
             <p class="small-note">归因可能使用本机 token 占比假设分摊，可能混入其他设备消耗。</p>
           </section>
 
-          <section class="panel trend-panel panel-wide" aria-labelledby="trend-title">
+          <section id="trendSection" class="panel trend-panel panel-wide" aria-labelledby="trend-title">
             <div class="panel-header">
               <div>
                 <p class="section-kicker">QUOTA TREND</p>
@@ -184,45 +209,48 @@
             <p class="chart-caption">趋势来自本地快照中的 remainingPercent，仅用于观察变化。</p>
           </section>
 
-          <section class="panel recommendation-panel" aria-labelledby="recommendation-title">
+          <section id="modelSection" class="panel recommendation-panel panel-wide" aria-labelledby="recommendation-title">
             <div class="panel-header">
               <div>
                 <p class="section-kicker">MODEL GUIDE</p>
-                <h2 id="recommendation-title">模式建议</h2>
+                <h2 id="recommendation-title">模式总览</h2>
               </div>
-              <span class="recommendation-badge">默认仅建议</span>
+              <span id="modelOverviewUpdated" class="recommendation-badge">等待数据</span>
             </div>
-            <div class="recommendation-main">
-              <span class="recommendation-label">当前推荐</span>
-              <strong id="recommendedModel">等待建议</strong>
-              <span id="recommendedEffort" class="effort-chip">—</span>
+            <p id="modelOverviewNote" class="panel-note">模型速率只用于横向参考，不把 API 美元成本换算成订阅百分比。</p>
+            <div id="modelOverviewList" class="model-overview-list" role="list" aria-label="模型速率总览"></div>
+            <div class="model-overview-footer">
+              <span id="modelOverviewSource">来源：等待数据</span>
+              <span id="modelOverviewReference">— 表示无可用样本</span>
             </div>
-            <p id="recommendationReason" class="muted-copy">后端返回建议后会显示理由和来源。</p>
-            <p id="recommendationSource" class="source-copy">来源：等待数据</p>
-            <div id="recommendationError" class="inline-error" role="alert" hidden></div>
-            <div class="recommendation-controls">
-              <label class="field-label" for="objectiveSelect">偏好目标</label>
-              <select id="objectiveSelect" class="select-control">
-                <option value="economy">economy · 节省额度</option>
-                <option value="balanced">balanced · 平衡</option>
-                <option value="quality">quality · 优先质量</option>
-              </select>
-              <label class="check-row" for="autoSwitchCheckbox">
-                <input id="autoSwitchCheckbox" type="checkbox">
-                <span>允许自动为新任务设置默认模型（影响后续默认值）</span>
-              </label>
-              <p class="small-note">开启后只影响后续默认值；正在运行的任务不会被切换。</p>
-              <p id="demoSettingsNote" class="small-note demo-settings-note" hidden>演示模式已禁用模型自动操作；演示任务和账户数字不是你的真实数据。</p>
-              <p class="small-note">关闭自动切换仅停止后续改动，不自动撤回最后一次默认值。恢复操作会核对当前设置；如果你已另行修改 model，后端会拒绝覆盖。</p>
-              <div class="restore-controls">
-                <button id="restoreDefaultsBtn" class="button button-quiet" type="button">恢复接管前的默认模型</button>
-                <span id="restoreDefaultsStatus" class="restore-status" role="status" aria-live="polite">需要时手动恢复</span>
+            <details id="defaultModelSettings" class="default-model-settings">
+              <summary>默认模型设置</summary>
+              <p id="defaultModelTarget" class="small-note">默认目标尚未确定</p>
+              <div id="defaultModelError" class="inline-error" role="alert" hidden></div>
+              <div class="recommendation-controls">
+                <label class="field-label" for="objectiveSelect">偏好目标</label>
+                <select id="objectiveSelect" class="select-control">
+                  <option value="economy">economy · 节省额度</option>
+                  <option value="balanced">balanced · 平衡</option>
+                  <option value="quality">quality · 优先质量</option>
+                </select>
+                <label class="check-row" for="autoSwitchCheckbox">
+                  <input id="autoSwitchCheckbox" type="checkbox">
+                  <span>允许自动为新任务设置默认模型（影响后续默认值）</span>
+                </label>
+                <p class="small-note">开启后只影响后续默认值；正在运行的任务不会被切换。</p>
+                <p id="demoSettingsNote" class="small-note demo-settings-note" hidden>演示模式已禁用模型自动操作；演示任务和账户数字不是你的真实数据。</p>
+                <p class="small-note">关闭自动切换仅停止后续改动，不自动撤回最后一次默认值。恢复操作会核对当前设置；如果你已另行修改 model，后端会拒绝覆盖。</p>
+                <div class="restore-controls">
+                  <button id="restoreDefaultsBtn" class="button button-quiet" type="button">恢复接管前的默认模型</button>
+                  <span id="restoreDefaultsStatus" class="restore-status" role="status" aria-live="polite">需要时手动恢复</span>
+                </div>
+                <div id="restoreDefaultsError" class="inline-error restore-error" role="alert" hidden></div>
               </div>
-              <div id="restoreDefaultsError" class="inline-error restore-error" role="alert" hidden></div>
-            </div>
+            </details>
           </section>
 
-          <section class="panel reset-panel" aria-labelledby="reset-title">
+          <section id="resetSection" class="panel reset-panel" aria-labelledby="reset-title">
             <div class="panel-header">
               <div>
                 <p class="section-kicker">RESET RADAR</p>
@@ -299,7 +327,7 @@
             </div>
           </section>
 
-          <section class="panel diagnostics-panel" aria-labelledby="diagnostics-title">
+          <section id="diagnosticsSection" class="panel diagnostics-panel" aria-labelledby="diagnostics-title">
             <div class="panel-header">
               <div>
                 <p class="section-kicker">HEALTH</p>
