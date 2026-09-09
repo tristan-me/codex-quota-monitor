@@ -1005,16 +1005,26 @@
       label.textContent = formatPercent(max - (max - min) * fraction);
       svg.append(label);
     });
+    const pointPosition = (index) => `${scaleX(index).toFixed(2)} ${scaleY(points[index].value).toFixed(2)}`;
+    const gapSegments = [];
     const pathData = points.map((point, index) => {
-      const move = index === 0 || point.at - points[index - 1].at > gapMs;
-      return `${move ? 'M' : 'L'} ${scaleX(index).toFixed(2)} ${scaleY(point.value).toFixed(2)}`;
+      const gap = index > 0 && point.at - points[index - 1].at > gapMs;
+      if (gap) gapSegments.push(`M ${pointPosition(index - 1)} L ${pointPosition(index)}`);
+      return `${index === 0 || gap ? 'M' : 'L'} ${pointPosition(index)}`;
     }).join(' ');
+    if (gapSegments.length) {
+      const bridge = createSvgElement('path', {
+        d: gapSegments.join(' '), class: 'trend-gap-line', fill: 'none',
+        'aria-label': '暗线连接缺失或损坏区间两端的已知样本，仅作连线参考',
+      });
+      svg.append(bridge);
+    }
     svg.append(createSvgElement('path', { d: pathData, class: 'trend-line', fill: 'none' }));
     points.forEach((point, index) => {
       const circle = createSvgElement('circle', {
         cx: scaleX(index),
         cy: scaleY(point.value),
-        r: points.length > 30 ? 2.5 : 4,
+        r: points.length > 30 ? 1 : 4,
         class: 'trend-point',
       });
       circle.setAttribute('aria-label', `${point.reset ? '额度重置后 ' : ''}${formatPercent(point.value)} ${formatDate(point.at, '')}`.trim());

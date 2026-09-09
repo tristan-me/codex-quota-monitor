@@ -1294,6 +1294,14 @@ button:disabled {
   filter: drop-shadow(0 3px 7px rgba(100, 228, 192, 0.2));
 }
 
+.trend-gap-line {
+  stroke: var(--accent);
+  stroke-opacity: 0.28;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
 .trend-point {
   fill: var(--surface-raised);
   stroke: var(--accent);

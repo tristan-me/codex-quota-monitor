@@ -45,7 +45,7 @@ Account and task values in these screenshots are synthetic examples. Reset annou
 | Child tasks | Expand child rows and see their contribution to the parent task. |
 | Search | Find tasks by title keywords or full IDs, including multiple search terms. Browse five tasks per page, show more, or expand child tasks. Filters and expanded rows stay as you left them during refreshes. |
 | Allocation summary | How much observed account usage can be attributed to local tasks, and how much remains unattributed. |
-| Trend | A sliding-window trend that retains valid samples across quota resets, labels its start and latest values, and breaks the line where samples are missing. |
+| Trend | A sliding-window trend that retains valid samples across quota resets, labels its start and latest values, and connects missing or damaged intervals with dimmer straight lines between known samples. |
 | Models | Compare model and effort rows with local observations clearly separated from dated external reference data. External comparisons provide context; they are not subscription prices. |
 
 Task totals cover every session in the selected window. The latest-session line includes that session and child work launched within it; a reused child contributes only the matching execution. Parent and child quota is added, while parallel elapsed time is counted once. Running tasks appear first, ordered by their latest session start, newest first. Idle tasks follow, ordered by their last completion, newest first. Elapsed totals are labeled with the selected window; once continuous work fills that window, new time replaces old time leaving the window, so the total can stay constant.
