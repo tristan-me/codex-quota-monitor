@@ -410,8 +410,8 @@ test("completed parent upper bound is exclusive and unknown starts sort last wit
   const tieA = thread({ id: "tie-a", startedAt: 20 });
   const tieB = thread({ id: "tie-b", startedAt: 20 });
   const firstWithTies = e.sessions([oldActive, newIdle, unknown, tieA, tieB], at(20));
-  assert.deepEqual(first.map((row) => row.id), ["new-idle", "old-active", "unknown"]);
-  assert.deepEqual(firstWithTies.map((row) => row.id), ["tie-a", "tie-b", "new-idle", "old-active", "unknown"]);
+  assert.deepEqual(first.map((row) => row.id), ["old-active", "new-idle", "unknown"]);
+  assert.deepEqual(firstWithTies.map((row) => row.id), ["tie-a", "tie-b", "old-active", "new-idle", "unknown"]);
   const second = e.sessions([tieB, tieA, unknown, newIdle, oldActive], at(20));
-  assert.deepEqual(second.map((row) => row.id), ["tie-a", "tie-b", "new-idle", "old-active", "unknown"]);
+  assert.deepEqual(second.map((row) => row.id), ["tie-a", "tie-b", "old-active", "new-idle", "unknown"]);
 });

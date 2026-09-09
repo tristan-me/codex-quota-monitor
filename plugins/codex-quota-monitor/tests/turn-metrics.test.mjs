@@ -129,7 +129,7 @@ test("advancing a projection ordinal does not start another turn", () => {
   assert.equal(view(e, task("a", 100), 30).latestTurnEstimatedPercent, 1);
 });
 
-test("newer latest-turn starts move ahead regardless of active status", () => {
+test("active tasks lead and newer starts order each status group", () => {
   const e = new Estimator();
   const a = { ...task("a", 0, 0), id: "a" };
   const b = { ...task("b", 0, 0), id: "b" };
@@ -139,7 +139,19 @@ test("newer latest-turn starts move ahead regardless of active status", () => {
   const newerB = { ...b, activityEvidence: { turnId: "b-new" }, startedAt: ms(2) };
   const middleC = { ...c, activityEvidence: { turnId: "c-new" }, startedAt: ms(1) };
   assert.deepEqual(e.sessions([middleC, idleA, newerB], ms(5)).map(x => x.id), ["b", "c", "a"]);
-  assert.deepEqual(e.sessions([{ ...newerB, status: "idle", completedAt: ms(6) }, middleC, idleA], ms(6)).map(x => x.id), ["b", "c", "a"]);
+  assert.deepEqual(e.sessions([{ ...newerB, status: "idle", completedAt: ms(6) }, middleC, idleA], ms(6)).map(x => x.id), ["c", "b", "a"]);
+});
+
+test("ABC becomes ACB when B completes while A and C keep running", () => {
+  const e = new Estimator();
+  const a = { ...task("a", 0, 30), id: "A" };
+  const b = { ...task("b", 0, 20), id: "B" };
+  const c = { ...task("c", 0, 10), id: "C" };
+  assert.deepEqual(e.sessions([c, b, a], ms(40)).map(row => row.id), ["A", "B", "C"]);
+  const finishedB = { ...b, status: "idle", completedAt: ms(41) };
+  assert.deepEqual(e.sessions([finishedB, c, a], ms(42)).map(row => row.id), ["A", "C", "B"]);
+  const finishedC = { ...c, status: "idle", completedAt: ms(43) };
+  assert.deepEqual(e.sessions([finishedC, finishedB, a], ms(44)).map(row => row.id), ["A", "B", "C"]);
 });
 
 test("regressed and unknown projections do not claim an old duration as the latest turn", () => {

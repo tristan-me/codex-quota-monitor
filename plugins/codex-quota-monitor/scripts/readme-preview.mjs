@@ -255,6 +255,15 @@ function readmeSessions(now) {
     latestTurnStatus: item.status,
     latestTurnSecondsPerPercent: item.secondsPerPercent || (latestEstimate > 0 ? Math.max(0, (latestInterval(item)[1] - latestInterval(item)[0]) / 1000) / latestEstimate : null),
   });
+  const sortByActivityThenStart = (a, b) => {
+    const aActive = a.status === "active";
+    const bActive = b.status === "active";
+    if (aActive !== bActive) return aActive ? -1 : 1;
+    const aStart = Number.isFinite(a.latestTurnStartedAt) ? a.latestTurnStartedAt : -Infinity;
+    const bStart = Number.isFinite(b.latestTurnStartedAt) ? b.latestTurnStartedAt : -Infinity;
+    if (aStart === bStart) return 0;
+    return bStart - aStart;
+  };
   return [rootInterface, rootTests, rootDocs, rootRelease].map(root=>{
     const own=ownMetrics(root), children=root.children.map(ownMetrics);
     const total=own.estimatedPercent+children.reduce((sum,item)=>sum+item.estimatedPercent,0);
@@ -265,7 +274,7 @@ function readmeSessions(now) {
     const observedGroupSeconds=unionSeconds([own,...children].flatMap(observedIntervals));
     const activeRate=[own,...children].reduce((sum,item)=>sum+(item.secondsPerPercent?1/item.secondsPerPercent:0),0);
     const ownWithTotals=enrichOwn(own, own.estimatedPercent === null ? null : own.estimatedPercent * 0.4);
-    const childrenWithTotals=children.map(item=>enrichOwn(item, item.estimatedPercent === null ? null : item.estimatedPercent * 0.4)).sort((a,b)=>b.latestTurnStartedAt-a.latestTurnStartedAt);
+    const childrenWithTotals=children.map(item=>enrichOwn(item, item.estimatedPercent === null ? null : item.estimatedPercent * 0.4)).sort(sortByActivityThenStart);
     return {...ownWithTotals,children:childrenWithTotals,childCount:childrenWithTotals.length,estimatedPercent:total,
       totalElapsedSeconds,totalEstimatedPercent:total,
       observationSeconds:observedGroupSeconds,
@@ -283,7 +292,7 @@ function readmeSessions(now) {
       ownLatestTurnEstimatedPercent:ownWithTotals.latestTurnEstimatedPercent,
       ownLatestTurnSecondsPerPercent:ownWithTotals.latestTurnSecondsPerPercent,
       observationSince:now-75*MINUTE_MS};
-  }).sort((a,b)=>b.latestTurnStartedAt-a.latestTurnStartedAt);
+  }).sort(sortByActivityThenStart);
 }
 
 function syntheticResetRadar(now, supplied) {

@@ -1910,6 +1910,8 @@ export class Estimator {
       .filter((at) => Number.isFinite(at) && at <= now)
       .reduce((latest, at) => Math.max(latest, at), -Infinity);
     const compare = (a, b) => {
+      const activeOrder = Number(b.status === "active") - Number(a.status === "active");
+      if (activeOrder) return activeOrder;
       const first = startOf(a), second = startOf(b);
       return first === second ? orderOf(a) - orderOf(b) : second > first ? 1 : -1;
     };
