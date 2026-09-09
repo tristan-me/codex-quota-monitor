@@ -205,8 +205,12 @@
               </div>
               <span id="trendLatest" class="panel-header-meta">等待历史样本</span>
             </div>
+            <div class="trend-legend" aria-label="趋势线说明">
+              <span><i class="trend-legend-line" aria-hidden="true"></i>已记录</span>
+              <span><i class="trend-legend-line trend-legend-line-missing" aria-hidden="true"></i>未记录或损坏</span>
+            </div>
             <div id="trendChart" class="trend-chart" role="img" aria-label="账户余量趋势图"></div>
-            <p class="chart-caption">亮线表示有记录的区间；暗线连接缺失或损坏区间的两端，仅作连线参考。</p>
+            <p class="chart-caption">暗线仅作两端已知样本之间的连线参考。</p>
           </section>
 
           <section id="modelSection" class="panel recommendation-panel panel-wide" aria-labelledby="recommendation-title">

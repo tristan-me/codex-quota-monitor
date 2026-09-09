@@ -1261,6 +1261,34 @@ button:disabled {
   line-height: 1.65;
 }
 
+.trend-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+  margin: 2px 0 10px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.trend-legend > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.trend-legend-line {
+  display: inline-block;
+  width: 24px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+
+.trend-legend-line-missing {
+  height: 2px;
+  opacity: 0.28;
+}
+
 .trend-chart {
   min-height: 220px;
   margin: 1px -4px 0;

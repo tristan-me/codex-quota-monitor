@@ -962,7 +962,7 @@
     }
     const width = Math.max(240, Math.min(680, chart.clientWidth || 680));
     const height = 220;
-    const padding = { top: 18, right: 20, bottom: 34, left: 56 };
+    const padding = { top: 42, right: 20, bottom: 34, left: 56 };
     const innerWidth = width - padding.left - padding.right;
     const innerHeight = height - padding.top - padding.bottom;
     const values = points.map((point) => point.value);
@@ -1033,16 +1033,12 @@
     const first = points[0];
     const last = points[points.length - 1];
 
-    const valueLabelY = (point) => {
-      const pointY = scaleY(point.value);
-      const above = pointY > padding.top + 24;
-      const preferred = above ? pointY - 12 : pointY + 18;
-      return Math.max(padding.top + 11, Math.min(height - padding.bottom - 10, preferred));
-    };
-    const appendValueLabel = (point, text, anchor, className, xOffset) => {
+    // Reserve a value row above the plotting area so every curve, including
+    // steep reset jumps and missing-data bridges, stays clear of the labels.
+    const appendValueLabel = (text, anchor, className, x) => {
       const label = createSvgElement('text', {
-        x: scaleX(point === first ? 0 : points.length - 1) + xOffset,
-        y: valueLabelY(point),
+        x,
+        y: 18,
         'text-anchor': anchor,
         class: `trend-value-label ${className}`,
       });
@@ -1051,10 +1047,10 @@
     };
 
     if (points.length === 1) {
-      appendValueLabel(first, `起点 / 最新 ${formatPercent(first.value)}`, 'middle', 'trend-latest-label', 0);
+      appendValueLabel(`起点 / 最新 ${formatPercent(first.value)}`, 'middle', 'trend-latest-label', padding.left + innerWidth / 2);
     } else {
-      appendValueLabel(first, `${width < 420 ? '' : '起点 '}${formatPercent(first.value)}`, 'start', 'trend-first-label', 8);
-      appendValueLabel(last, `${width < 420 ? '' : '最新 '}${formatPercent(last.value)}`, 'end', 'trend-latest-label', -8);
+      appendValueLabel(`起点 ${formatPercent(first.value)}`, 'start', 'trend-first-label', padding.left);
+      appendValueLabel(`最新 ${formatPercent(last.value)}`, 'end', 'trend-latest-label', width - padding.right);
     }
     const firstLabel = createSvgElement('text', { x: padding.left, y: height - 10, class: 'chart-axis-label' });
     firstLabel.textContent = formatDate(first.at, '开始');
