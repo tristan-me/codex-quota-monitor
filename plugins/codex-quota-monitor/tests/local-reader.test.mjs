@@ -954,3 +954,28 @@ test("rollout file order resolves equal start timestamps without caching content
   assert.equal(thread.activityEvidence.turnId, "same-second-next");
   assert.equal(JSON.stringify([...fixture.reader.rolloutCache.values()]).includes("PRIVATE_CONTENT_SENTINEL"), false);
 });
+
+for (const mode of ['replace-inode', 'rewrite-larger']) {
+  test(`a ${mode} rollout rebuilds metadata beyond the normal tail`, async (t) => {
+    const now = 1_800_000_000_000;
+    const fixture = await laggingProjectionFixture(t, { now,
+      rollout: rolloutEvent(now - 20_000, "task_started", "removed-turn") });
+    const first = findThread(fixture.reader.read(), "self-monitor-example");
+    assert.equal(first.activityEvidence.turnId, 'removed-turn');
+    const originalInode = (await fs.stat(fixture.file)).ino;
+    const replacement = rolloutEvent(now - 10_000, "task_started", "new-file-turn") +
+      ('{"type":"response_item","payload":{"content":"' + 'x'.repeat(1000) + '"}}\n').repeat(9000);
+    if (mode === 'replace-inode') {
+      await fs.writeFile(fixture.file + '.replacement', replacement);
+      await fs.rename(fixture.file + '.replacement', fixture.file);
+      assert.notEqual((await fs.stat(fixture.file)).ino, originalInode);
+    } else {
+      await fs.writeFile(fixture.file, replacement);
+      assert.equal((await fs.stat(fixture.file)).ino, originalInode);
+    }
+    const fresh = findThread(fixture.reader.read(), "self-monitor-example");
+    assert.equal(fresh.status, 'active');
+    assert.equal(fresh.activityEvidence.turnId, 'new-file-turn');
+    assert.equal(fresh.executionHistory.turns.some((turn) => turn.turnId === 'removed-turn'), false);
+  });
+}

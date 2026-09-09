@@ -1,5 +1,6 @@
 import { DatabaseSync } from "node:sqlite";
 import fs from "node:fs";
+import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 
@@ -527,6 +528,29 @@ function readLegacyRollout(file, diagnostics, { stat, previous, maxBytes = MAX_R
   };
 }
 
+// A larger file with the same inode can be a rewrite, not an append. Keep
+// only a small digest of the previously observed boundaries to verify it.
+function rolloutFingerprint(file, stat) {
+  let fd;
+  try {
+    fd = fs.openSync(file, "r");
+    const current = fs.fstatSync(fd);
+    if (current.dev !== stat.dev || current.ino !== stat.ino || current.size < stat.size) return null;
+    const hash = createHash("sha256");
+    for (const offset of new Set([0, Math.max(0, stat.size - 2048)])) {
+      const length = Math.min(2048, stat.size - offset);
+      const bytes = Buffer.alloc(length);
+      if (length && fs.readSync(fd, bytes, 0, length, offset) !== length) return null;
+      hash.update(bytes);
+    }
+    return hash.digest("hex");
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+  }
+}
+
 function latestTurnFromRow(row) {
   if (!row) return null;
   return {
@@ -845,11 +869,12 @@ export class LocalReader {
     if (cached && cached.dev === stat.dev && cached.ino === stat.ino && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) {
       return cached.result;
     }
-    const sameFileAppend = cached && cached.dev === stat.dev && cached.ino === stat.ino &&
-      stat.size > cached.size && stat.mtimeMs >= cached.mtimeMs;
+    const sameIdentity = cached && cached.dev === stat.dev && cached.ino === stat.ino;
+    const sameFileAppend = sameIdentity && stat.size > cached.size && stat.mtimeMs >= cached.mtimeMs &&
+      cached.fingerprint && rolloutFingerprint(file, cached) === cached.fingerprint;
     // Catch up across a burst using the bounded bootstrap budget. If even that
     // leaves a gap, discard cached live state: an unseen turn may have ended.
-    const maxBytes = (!cached && bootstrap) || (sameFileAppend && stat.size - cached.result.readOffset > MAX_ROLLOUT_TAIL_BYTES)
+    const maxBytes = (bootstrap && !sameFileAppend) || (sameFileAppend && stat.size - cached.result.readOffset > MAX_ROLLOUT_TAIL_BYTES)
       ? MAX_ROLLOUT_BOOTSTRAP_BYTES : MAX_ROLLOUT_TAIL_BYTES;
     const previous = sameFileAppend && stat.size - cached.result.readOffset <= maxBytes
       ? cached.result : null;
@@ -857,7 +882,11 @@ export class LocalReader {
       stat, previous,
       maxBytes,
     });
-    if (result) this.rolloutCache.set(file, { dev: stat.dev, ino: stat.ino, size: stat.size, mtimeMs: stat.mtimeMs, result });
+    if (result) {
+      const fingerprint = rolloutFingerprint(file, stat);
+      if (fingerprint) this.rolloutCache.set(file, { dev: stat.dev, ino: stat.ino, size: stat.size, mtimeMs: stat.mtimeMs, fingerprint, result });
+      else this.rolloutCache.delete(file);
+    }
     return result;
   }
 
