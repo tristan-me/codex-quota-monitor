@@ -129,6 +129,17 @@
     return `${seconds}秒`;
   }
 
+  function formatResetCountdown(value) {
+    const parsed = finiteNumber(value);
+    if (parsed === null) return '等待数据';
+    if (parsed <= 0) return '已到期，等待官方更新';
+    const seconds = Math.ceil(parsed);
+    const days = Math.floor(seconds / 86400);
+    const clock = [Math.floor(seconds % 86400 / 3600), Math.floor(seconds % 3600 / 60), seconds % 60]
+      .map(part => String(part).padStart(2, '0')).join(':');
+    return `${days ? `${days}天 ` : ''}${clock}`;
+  }
+
   function parseDate(value) {
     const numeric = finiteNumber(value);
     if (numeric !== null) {
@@ -1087,6 +1098,16 @@
       groupsById.set(model, group);
     });
     const groups = [...groupsById.values()];
+    const methods = {
+      'turn-average': { label: '本机轮次均值', className: 'method-turn-average' },
+      'recent-local': { label: '本机近况', className: 'method-recent-local' },
+      'same-model-reference': { label: '同模型参考推算', className: 'method-same-model-reference' },
+      'reference-only': { label: '缺少额度样本', className: 'method-reference-only' },
+    };
+    const methodFor = (row) => methods[row.calculationKind] ||
+      methods[row.sourceKind === 'local-average' ? 'turn-average'
+        : ['local-calibrated', 'local-only'].includes(row.sourceKind) ? 'recent-local'
+          : row.sourceKind === 'radar-relative' ? 'same-model-reference' : 'reference-only'];
     const effortRank = (row) => {
       const effort = safeText(row.effort || row.reasoningEffort, '').toLowerCase();
       const index = EFFORT_ORDER.indexOf(effort);
@@ -1141,7 +1162,7 @@
           if (!phrase || phrase === '来源待定') phrase = kind.includes('radar') || kind.includes('reference') ? 'Codex Radar参考推算' : kind.includes('local') || kind.includes('observ') ? '本机观测估算' : '来源待定';
           if (basis && basis !== phrase) phrase = `${phrase}（${basis}）`;
           const key = phrase;
-          const record = sourceGroups.get(key) || { phrase, efforts: [] };
+          const record = sourceGroups.get(key) || { phrase, efforts: [], method: methodFor(row) };
           record.efforts.push(effort);
           sourceGroups.set(key, record);
         });
@@ -1151,17 +1172,19 @@
           if (sourceGroups.size === 0) {
             basisElement.append(textElement('p', '', '来源说明等待数据。'));
           } else {
-            sourceGroups.forEach((record) => basisElement.append(textElement('p', 'model-overview-basis-group', `${record.efforts.join('/')}：${record.phrase}`)));
+            sourceGroups.forEach((record) => basisElement.append(textElement('p', `model-overview-basis-group ${record.method.className}`, `${record.efforts.join('/')}：${record.phrase}`)));
           }
         }
         activeGroup.rows.forEach((row) => {
           const item = document.createElement('article');
-          item.className = 'model-overview-row';
+          const method = methodFor(row);
+          item.className = `model-overview-row ${method.className}`;
           item.setAttribute('role', 'listitem');
           const effort = safeText(row.effort || row.reasoningEffort, '—');
           const header = document.createElement('div');
           header.className = 'model-overview-header';
           header.append(textElement('span', 'effort-chip', effort));
+          header.append(textElement('span', 'calculation-badge', method.label));
           item.append(header);
           const metrics = document.createElement('div');
           metrics.className = 'model-overview-metrics';
@@ -1211,7 +1234,7 @@
         sourceElement.textContent = `来源：${source}`;
       }
     }
-    setText('modelOverviewReference', 'API参考成本仅作外部价格参考，不等于订阅额度百分比。', '— 表示无可用样本');
+    setText('modelOverviewReference', `API参考成本仅作外部参考。${overview.referenceUpdatedAt ? ` 外部数据更新于 ${formatDate(overview.referenceUpdatedAt)}` : ''}`, '— 表示无可用样本');
   }
 
   function renderRecommendation(snapshot) {
@@ -1247,8 +1270,8 @@
         ? '此额度窗口的官方重置（样本已过期）'
         : '此额度窗口的官方重置';
     setText('officialResetLabel', resetLabel, '此额度窗口的官方重置');
-    setText('exhaustionLabel', state.mode === 'demo' ? '本机速率耗尽估计（演示）' : '本机速率耗尽估计', '本机速率耗尽估计');
-    setText('officialResetCountdown', stale ? '官方数据暂不可用' : resetSeconds === null ? '等待数据' : formatShortDuration(resetSeconds), '等待数据');
+    setText('exhaustionLabel', state.mode === 'demo' ? '近24小时耗尽估计（演示）' : '额度耗尽估计（近24小时）', '本机速率耗尽估计');
+    setText('officialResetCountdown', stale ? '官方数据暂不可用' : resetSeconds === null ? '等待数据' : formatResetCountdown(resetSeconds), '等待数据');
     const resetSource = safeText(reset.source, 'account/rateLimits/read');
     const resetTimezone = safeText(reset.timezone, 'Asia/Shanghai');
     const timezoneSuffix = resetTimezone === 'Asia/Shanghai' ? '' : ` · 时区 ${resetTimezone}`;
@@ -1258,10 +1281,22 @@
         ? `上次已知 ${formatBeijingDateTime(reset.lastKnownScheduledAt)}`
         : '官方时间待定';
     setText('officialResetAt', `${resetTime} · ${resetSource}${timezoneSuffix}${stale ? ' · 样本已过期' : ''}`, '官方时间待定');
+    const sampleDate = parseDate(reset.observedAt);
+    const sampleClock = sampleDate ? new Intl.DateTimeFormat('zh-CN', {
+      timeZone: 'Asia/Shanghai', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+    }).format(sampleDate) : null;
+    setText('officialResetUpdated', sampleClock
+      ? `官方读取于 ${sampleClock} · 每${getSettings(snapshot).quotaPollSeconds}秒更新${stale ? ' · 样本已过期' : ''}`
+      : '等待官方额度样本');
+    const burn = isRecord(reset.exhaustionBasis) ? reset.exhaustionBasis : null;
+    const burnRate = finiteNumber(burn?.percentPerHour);
+    setText('exhaustionBasis', burn && burnRate !== null
+      ? `近24小时已观察 ${formatTaskPercent(burn.observedPercent)}，有效 ${formatDuration(burn.coverageSeconds)}；均速 ${burnRate.toFixed(2)}%/时`
+      : '等待有效的近24小时消耗样本');
     const exhaustionDate = stale ? null : parseDate(reset.exhaustionAt);
     state.exhaustionAt = reset.exhaustionAt;
     setText('exhaustionEstimate', exhaustionDate ? formatShortDuration((exhaustionDate.getTime() - Date.now()) / 1000, '已到期') : '等待速率样本', '等待速率样本');
-    setText('exhaustionAt', exhaustionDate ? formatDate(exhaustionDate) : '当前速率尚无可用估计', '当前速率尚无可用估计');
+    setText('exhaustionAt', exhaustionDate ? formatDate(exhaustionDate) : '近24小时记录尚不足以估计', '近24小时记录尚不足以估计');
     const unexpected = safeText(reset.unexpected, 'unknown').toLowerCase();
     setText('unexpectedReset', !unexpected || unexpected === 'unknown' ? '未知' : safeText(reset.unexpected), '未知');
   }
@@ -1464,7 +1499,7 @@
     if (state.resetBaseSeconds !== null && state.resetBaseAt !== null) {
       const elapsed = (Date.now() - state.resetBaseAt) / 1000;
       const remaining = state.resetBaseSeconds - elapsed;
-      setText('officialResetCountdown', formatShortDuration(remaining), '等待数据');
+      setText('officialResetCountdown', formatResetCountdown(remaining), '等待数据');
     }
     const exhaustion = parseDate(state.exhaustionAt);
     if (exhaustion) {

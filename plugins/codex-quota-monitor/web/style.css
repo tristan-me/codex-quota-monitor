@@ -1434,6 +1434,42 @@ button:disabled {
   overflow-wrap: anywhere;
 }
 
+.method-turn-average { --method-color: var(--accent); --method-tint: rgba(100, 228, 192, 0.08); }
+.method-recent-local { --method-color: var(--accent-blue); --method-tint: rgba(116, 169, 255, 0.08); }
+.method-same-model-reference { --method-color: var(--warning); --method-tint: rgba(244, 199, 115, 0.08); }
+.method-reference-only { --method-color: var(--muted); --method-tint: rgba(127, 139, 168, 0.05); }
+
+.model-calculation-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px 16px;
+  margin: 10px 0;
+  font-size: 11px;
+}
+
+.model-calculation-legend > span { color: var(--method-color); }
+.model-calculation-legend > span::before {
+  content: '';
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 5px;
+  border-radius: 50%;
+  background: var(--method-color);
+}
+
+.model-overview-basis-group { color: var(--method-color, var(--muted)); }
+.model-overview-row[class*="method-"] {
+  border-left: 3px solid var(--method-color);
+  background: var(--method-tint);
+}
+.model-overview-row[class*="method-"] .effort-chip {
+  color: var(--method-color);
+  border-color: var(--method-color);
+  background: var(--method-tint);
+}
+.calculation-badge { color: var(--method-color); font-size: 10px; }
+
 .model-overview-row {
   min-width: 0;
   padding: 13px 14px;
@@ -2437,3 +2473,5 @@ body.compact #main {
   .metric-value { font-size: 20px; }
 }
 body.compact .app-shell { margin-left:auto; margin-right:auto; }
+
+.reset-stat small.exhaustion-basis { white-space: normal; line-height: 1.5; }

@@ -569,10 +569,9 @@ export class Estimator {
     };
   }
 
-  sliceQuotaEvent(event, now) {
+  sliceQuotaEvent(event, now, cutoff = this.cutoffAt(now)) {
     if (!event || !Number.isFinite(event.percent) || event.percent <= 0)
       return null;
-    const cutoff = this.cutoffAt(now);
     const startAt = Number(event.startAt);
     const endAt = Number(event.endAt);
     const hasInterval = Number.isFinite(startAt) && Number.isFinite(endAt) && endAt > startAt;
@@ -626,9 +625,9 @@ export class Estimator {
     }
   }
 
-  rollingAttribution(now) {
-    const cutoff = this.cutoffAt(now);
-    const observationSince = this.observationSince(now);
+  rollingAttribution(now, requestedCutoff = this.cutoffAt(now)) {
+    const cutoff = Math.max(this.cutoffAt(now), requestedCutoff);
+    const observationSince = Math.max(this.observationSince(now), cutoff);
     const retainedPosition = (position) => position &&
       position.endAt >= cutoff && position.startAt <= now;
     const amountIsComplete = (event, sliced) => {
@@ -672,7 +671,7 @@ export class Estimator {
         boundary = Math.max(boundary, restartAfter);
         continue;
       }
-      const sliced = this.sliceQuotaEvent(event, now);
+      const sliced = this.sliceQuotaEvent(event, now, cutoff);
       if (!amountIsComplete(event, sliced)) {
         // A recovered lower-bound record or malformed official sample makes all
         // earlier records incomplete. Keep the task allocations, but restart
@@ -726,6 +725,30 @@ export class Estimator {
         : excludedIncompleteHistory
           ? "waiting-after-incomplete-history"
           : "waiting-for-quota-change",
+    };
+  }
+
+  dailyAccountBurn(now) {
+    const cutoff = Math.max(this.cutoffAt(now), now - 24 * 60 * 60 * 1000);
+    const observed = this.rollingAttribution(now, cutoff);
+    const history = normalizeQuotaHistory(this.state.history, cutoff, now);
+    const since = !observed.excludedIncompleteHistory && history.length
+      ? Math.max(cutoff, Math.min(history[0].at, observed.since))
+      : Math.max(cutoff, observed.since);
+    const coverageSeconds = Math.max(0, (now - since) / 1000);
+    const percentPerHour = coverageSeconds >= 60 && observed.sampleCount > 0
+      ? observed.observedPercent * 3600 / coverageSeconds : null;
+    return {
+      windowHours: 24,
+      since,
+      through: now,
+      coverageSeconds,
+      observedPercent: observed.observedPercent,
+      percentPerHour,
+      sampleCount: observed.sampleCount,
+      partial: coverageSeconds < 24 * 3600 - 60,
+      excludedIncompleteHistory: observed.excludedIncompleteHistory,
+      source: "official-account-24h-average",
     };
   }
 
@@ -2116,6 +2139,7 @@ export class Estimator {
           ownSecondsPerPercent: own.secondsPerPercent,
           ownAverageSecondsPerPercent: own.averageSecondsPerPercent,
           ownObservationSeconds: own.observationSeconds,
+          ownLatestTurnRateSource: own.latestTurnRateSource,
           ownEstimateSource: own.estimateSource,
           ownEstimateIncludesRecovery: own.estimateIncludesRecovery,
           ...this.latestFamily(thread, members, ownRows, now),

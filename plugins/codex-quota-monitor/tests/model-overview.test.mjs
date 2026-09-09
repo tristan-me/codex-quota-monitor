@@ -81,11 +81,11 @@ test("own root metrics and flat children are attributed once per model/effort", 
   assert.equal(luna.quotaPercentPerHour, 60);
 });
 
-test("average local anchor yields an explicit Radar-relative estimate", () => {
+test("an average local anchor estimates another effort of the same model only", () => {
   const overview = buildModelOverview({
     models: [
       model("gpt-5.6-terra", ["medium"]),
-      model("gpt-5.6-luna", ["medium"]),
+      model("gpt-5.6-terra", ["high"]),
     ],
     sessions: [
       {
@@ -105,14 +105,15 @@ test("average local anchor yields an explicit Radar-relative estimate", () => {
     now,
   });
   const terra = row(overview, "gpt-5.6-terra", "medium");
-  const luna = row(overview, "gpt-5.6-luna", "medium");
+  const luna = row(overview, "gpt-5.6-terra", "high");
   assert.equal(terra.sourceKind, "local-average");
   assert.equal(terra.secondsPerPercent, 160);
   assert.ok(Math.abs(terra.quotaPercentPerHour - 3600 / 160) < 1e-12);
   assert.equal(luna.sourceKind, "radar-relative");
   assert.ok(luna.secondsPerPercent > 0);
   assert.ok(luna.quotaPercentPerHour > 0);
-  assert.match(luna.rateBasis, /倍率/);
+  assert.match(luna.rateBasis, /同一模型/);
+  assert.deepEqual(luna.referenceAnchor, {model:"gpt-5.6-terra",effort:"medium"});
 });
 
 test("Spark never becomes the main Codex Radar anchor", () => {
@@ -226,4 +227,47 @@ test("nested child family totals do not replace its own model rate", () => {
   });
   assert.equal(row(overview, "gpt-5.6-luna", "high").secondsPerPercent, 60);
   assert.equal(row(overview, "gpt-5.6-terra", "medium").secondsPerPercent, 120);
+});
+
+test('a cheap-model sample never invents expensive-model subscription rates', () => {
+  const overview=buildModelOverview({models:[model('gpt-6-astra',['ultra','high']),model('gpt-5.6-luna',['max','low'])],
+    sessions:[{model:'gpt-5.6-luna',reasoningEffort:'max',averageSecondsPerPercent:3000,observationSeconds:100000}],now});
+  for(const effort of ['ultra','high']) {
+    const astra=row(overview,'gpt-6-astra',effort);
+    assert.equal(astra.secondsPerPercent,null);
+    assert.equal(astra.calculationKind,'reference-only');
+    assert.ok(astra.referenceCostPerHour>0);
+  }
+  assert.equal(row(overview,'gpt-5.6-luna','low').referenceAnchor.model,'gpt-5.6-luna');
+});
+
+test('a model uses its own anchor even when another model has much more history', () => {
+  const overview=buildModelOverview({models:[model('gpt-6-astra',['ultra','high']),model('gpt-5.6-luna',['max'])],
+    sessions:[{model:'gpt-5.6-luna',reasoningEffort:'max',averageSecondsPerPercent:3000,observationSeconds:100000},
+      {model:'gpt-6-astra',reasoningEffort:'ultra',averageSecondsPerPercent:6000,observationSeconds:100}],now});
+  const high=row(overview,'gpt-6-astra','high');
+  assert.deepEqual(high.referenceAnchor,{model:'gpt-6-astra',effort:'ultra'});
+  const ultra=row(overview,'gpt-6-astra','ultra');
+  assert.ok(Math.abs(high.quotaPercentPerHour-(.6*high.referenceCostPerHour/ultra.referenceCostPerHour))<1e-12);
+});
+
+test('matched own-turn averages replace task lifetime and momentary spike rates', () => {
+  const overview=buildModelOverview({models:[model('gpt-6-astra',['xhigh'])],sessions:[{
+    model:'gpt-6-astra',reasoningEffort:'xhigh',ownStatus:'active',ownSecondsPerPercent:2,
+    ownAverageSecondsPerPercent:10000,ownObservationSeconds:100000,
+    ownLatestTurnElapsedSeconds:600,ownLatestTurnEstimatedPercent:.1,
+    ownLatestTurnRateSource:'recent-token-calibrated',
+    latestTurnElapsedSeconds:3600,latestTurnEstimatedPercent:10,children:[],
+  }],now});
+  const item=row(overview,'gpt-6-astra','xhigh');
+  assert.equal(item.secondsPerPercent,6000);
+  assert.equal(item.calculationKind,'turn-average');
+});
+
+test('missing own-turn usage never falls back to a differently scoped task average', () => {
+  const overview=buildModelOverview({models:[model('gpt-6-astra',['xhigh'])],sessions:[{
+    model:'gpt-6-astra',reasoningEffort:'xhigh',ownStatus:'idle',ownAverageSecondsPerPercent:10000,
+    ownLatestTurnElapsedSeconds:600,ownLatestTurnEstimatedPercent:null,children:[],
+  }],now});
+  assert.equal(row(overview,'gpt-6-astra','xhigh').secondsPerPercent,null);
 });

@@ -117,6 +117,11 @@ function ownSessionView(session) {
     secondsPerPercent: session.ownSecondsPerPercent,
     averageSecondsPerPercent: session.ownAverageSecondsPerPercent,
     observationSeconds: session.ownObservationSeconds,
+    ...(Object.hasOwn(session, "ownLatestTurnElapsedSeconds") ? {
+      latestTurnElapsedSeconds: session.ownLatestTurnElapsedSeconds,
+      latestTurnEstimatedPercent: session.ownLatestTurnEstimatedPercent,
+      latestTurnRateSource: session.ownLatestTurnRateSource,
+    } : {}),
   };
 }
 
@@ -130,7 +135,7 @@ function localEntries(sessions) {
       const hasRootRate = LOCAL_RATE_FIELDS.some(
         (field) => finite(root[field]) !== null,
       );
-      if (hasRootRate) entries.push(root);
+      if (hasRootRate || (finite(root.latestTurnElapsedSeconds) > 0 && finite(root.latestTurnEstimatedPercent) > 0)) entries.push(root);
       for (const child of children) {
         if (child && typeof child === "object") entries.push(ownSessionView(child));
       }
@@ -146,8 +151,18 @@ function aggregateLocalRates(sessions) {
   for (const entry of localEntries(sessions)) {
     const key = keyFor(entry.model, entry.reasoningEffort ?? entry.effort);
     if (!key) continue;
-    const current = finite(entry.secondsPerPercent);
-    const average = finite(entry.averageSecondsPerPercent);
+    const hasTurnScope = Object.hasOwn(entry, "latestTurnElapsedSeconds");
+    const turnSeconds = finite(entry.latestTurnElapsedSeconds);
+    const turnPercent = finite(entry.latestTurnEstimatedPercent);
+    const turnAverage = turnSeconds > 0 && turnPercent > 0 ? turnSeconds / turnPercent : null;
+    // Model comparisons use one matched execution scope, not a task lifetime
+    // average labeled with its latest model setting. Prefer the stable turn
+    // mean; a recent rate is only a fallback when that mean is unavailable.
+    const current = hasTurnScope
+      ? turnAverage === null && entry.latestTurnRateSource === "recent-token-calibrated"
+        ? finite(entry.secondsPerPercent) : null
+      : finite(entry.secondsPerPercent);
+    const average = hasTurnScope ? turnAverage : finite(entry.averageSecondsPerPercent);
     const seconds =
       current !== null && current > 0
         ? current
@@ -156,7 +171,9 @@ function aggregateLocalRates(sessions) {
           : null;
     if (seconds === null) continue;
     const kind = current !== null && current > 0 ? "current" : "average";
-    const observation = finite(entry.observationSeconds);
+    const observation = hasTurnScope
+      ? kind === "average" ? turnSeconds : 5
+      : finite(entry.observationSeconds);
     const weight = observation !== null && observation > 0 ? observation : 1;
     const item = byKey.get(key) || {
       model: baseModel(entry.model),
@@ -167,17 +184,16 @@ function aggregateLocalRates(sessions) {
       sampleCount: 0,
       currentSamples: 0,
     };
-    if (kind === "average" && item.currentSamples > 0) continue;
-    if (
-      kind === "current" &&
-      item.currentSamples === 0 &&
-      item.sampleCount > 0
-    ) {
+    const priority = hasTurnScope && kind === "average" ? 3 : kind === "current" ? 2 : 1;
+    if (item.priority > priority) continue;
+    if (priority > (item.priority || 0) && item.sampleCount > 0) {
       item.observedSeconds = 0;
       item.observedQuotaRate = 0;
       item.observationSeconds = 0;
       item.sampleCount = 0;
+      item.currentSamples = 0;
     }
+    item.priority = priority;
     // seconds/percent is a reciprocal rate. Arithmetic averaging would be
     // wrong when samples cover different durations: 100s at 1%/100s and
     // 200s at 1%/300s combine to 400s/(1+1.5)=160s/percent.
@@ -206,13 +222,13 @@ function displayNameFor(model, fallback) {
 
 function sourceLabelFor(kind, local, radar, available) {
   if (kind === "local-calibrated") {
-    return `本机观测估算 · ${local.sampleCount}个样本`;
+    return `本机近况估算 · ${local.sampleCount}个样本`;
   }
   if (kind === "local-average") {
-    return `本机观测估算 · 历史平均 · ${local.sampleCount}个样本`;
+    return `本机轮次均值 · ${local.sampleCount}个样本`;
   }
   if (kind === "radar-relative") {
-    return `Codex Radar DeepSWE参考 + 本机观测估算${local ? ` · ${local.sampleCount}个样本` : ""}`;
+    return "同模型档位参考推算";
   }
   if (kind === "radar-reference") {
     return `Codex Radar DeepSWE参考 · n=${radar?.total ?? "?"}`;
@@ -227,10 +243,10 @@ function sourceLabelFor(kind, local, radar, available) {
 function rateBasisFor(kind, state) {
   const gap = state?.gap === true ? "；监控期间存在观测空档" : "";
   if (kind === "local-calibrated")
-    return `本机观测估算：当前/近期模型与推理档位样本${gap}`;
-  if (kind === "local-average") return `本机观测估算：历史平均样本${gap}`;
+    return `本机近况：同模型、同档位的近期分摊估算${gap}`;
+  if (kind === "local-average") return `本机轮次：本任务自身的轮次耗时 ÷ 同轮额度，按耗时合并样本${gap}`;
   if (kind === "radar-relative")
-    return `参考推测：以本机观测为锚点，按 Radar 同基准费用/小时倍率估算；假设任务费用/耗时比例与本机场景接近，不代表订阅扣费${gap}`;
+    return `参考推测：只使用同一模型的本机档位样本，按外部基准费用/小时比例推算其他档位；任务负载不同仍可能偏离${gap}`;
   if (kind === "radar-reference")
     return "仅外部参考：同基准 API费用/耗时；缺少订阅额度分母，不能直接换算每1%";
   if (kind === "local-only") return "本机观测估算：没有可比 Radar同基准参考";
@@ -252,8 +268,8 @@ function sortRows(left, right) {
 
 /**
  * Build a model/effort overview without I/O. Radar data is a reference
- * multiplier only; a subscription percentage rate requires a local calibrated
- * model sample. `now` is accepted so callers can keep this function pure and
+ * multiplier only within the same base model; a subscription rate requires
+ * a matching local model sample. `now` is accepted so callers can keep this function pure and
  * deterministic while choosing their own snapshot timestamp.
  */
 export function buildModelOverview({
@@ -330,7 +346,6 @@ export function buildModelOverview({
         b.item.observationSeconds - a.item.observationSeconds ||
         b.item.sampleCount - a.item.sampleCount,
     );
-  const anchor = localWithReference[0] || null;
   const rows = [];
 
   for (const item of availableRows.values()) {
@@ -338,6 +353,8 @@ export function buildModelOverview({
     const point = radar.get(key);
     const referenceCost = referenceCostPerHour(point);
     const localRate = local.get(key);
+    const anchor = localWithReference.find(({ item: candidate }) =>
+      candidate.model.toLowerCase() === item.model.toLowerCase()) || null;
     let sourceKind = "unavailable";
     let secondsPerPercent = null;
     let quotaPercentPerHour = null;
@@ -386,7 +403,15 @@ export function buildModelOverview({
       sourceKind,
       sourceLabel: sourceLabelFor(sourceKind, localRate, point, item.available),
       referenceCostPerHour: referenceCost,
-      rateBasis: rateBasisFor(sourceKind, state),
+      rateBasis: sourceKind === "radar-relative"
+        ? `${rateBasisFor(sourceKind, state)}；基准：${anchor.item.model} / ${anchor.item.effort}`
+        : rateBasisFor(sourceKind, state),
+      calculationKind: localRate
+        ? localRate.currentSamples > 0 ? "recent-local" : "turn-average"
+        : sourceKind === "radar-relative" ? "same-model-reference" : "reference-only",
+      sampleCount: localRate?.sampleCount ?? 0,
+      referenceAnchor: sourceKind === "radar-relative"
+        ? { model: anchor.item.model, effort: anchor.item.effort } : null,
       available: item.available,
     });
   }
@@ -397,7 +422,8 @@ export function buildModelOverview({
   return {
     rows,
     sourceUrl: RADAR_SOURCE_URL,
-    updatedAt,
-    note: "Codex Radar DeepSWE 的 API等效费用和耗时只用于横向参考；Radar倍率推测假设基准任务的费用/耗时比例与本机场景接近。订阅百分比与每1%耗时必须优先使用本机已校准模型与推理档位样本；没有本机锚点时不伪造 Astra 或其他模型的订阅分母，Spark 独立额度池也不会借用主 Codex 锚点。",
+    updatedAt: new Date(now).toISOString(),
+    referenceUpdatedAt: updatedAt,
+    note: "优先显示同模型、同档位的本机轮次均值，样本不足时使用本机近况；无直接样本的档位只做同模型参考推算。不同模型之间不借用额度基准。外部 API 参考费用与订阅百分比不是同一计量，所有额度速率仍为估算。",
   };
 }

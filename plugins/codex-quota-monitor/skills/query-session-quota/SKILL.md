@@ -17,6 +17,7 @@ Keep these distinctions visible:
 - Format processing and rate durations with integer hours, minutes, and seconds, for example “1时2分3秒”, “11分57秒”, or “48秒”; omit unused leading units and do not imply sub-second precision.
 - Local dashboard refreshes make no model calls; the conversation used to open or explain the monitor still consumes normal model usage.
 - Only describe native inline status and native window callbacks as supported if the capability flags say so. This version uses a separate dashboard.
+- Model overview colors identify the calculation method: recent own-turn means, recent local estimates, same-model reference estimates, or missing quota samples. Never borrow a different model’s quota baseline. Depletion estimates use observed account consumption over at most the last 24 hours, report actual coverage, and exclude quota top-ups from consumption; official reset cards display the latest official timestamp, sample time, and a ticking seconds countdown.
 - Model automation requires the user's explicit dashboard choice and affects future defaults. It does not switch an active turn or submit a prompt.
 
 Never resolve monitor failures by patching the Codex application, editing its conversation databases, resuming existing threads in the collector, or sending empty turns. Keep monitoring separate from user work.

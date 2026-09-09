@@ -589,11 +589,8 @@ export class Collector {
           })),
         };
       });
-    const rate = sessions.reduce(
-      (sum, task) =>
-        sum + (task.secondsPerPercent ? 1 / task.secondsPerPercent : 0),
-      0,
-    );
+    const dailyBurn = this.estimator.dailyAccountBurn(this.account.lastFetchedAt || now);
+    const rate = dailyBurn.percentPerHour > 0 ? dailyBurn.percentPerHour / 3600 : 0;
     const estimatedRows = sessions.filter(
       (task) => task.totalEstimatedPercent !== null && task.totalEstimatedPercent !== undefined,
     );
@@ -681,12 +678,14 @@ export class Collector {
         stale,
         scheduledAt: !stale ? window?.resetsAt : null,
         lastKnownScheduledAt: window?.resetsAt,
+        observedAt: this.account.lastFetchedAt,
+        exhaustionBasis: dailyBurn,
         secondsUntil:
           !stale && window?.resetsAt
             ? Math.max(0, (window.resetsAt - now) / 1000)
             : null,
         exhaustionAt:
-          !stale && window && rate > 0
+          !this.settings.paused && !stale && window && rate > 0
             ? now + (window.remainingPercent / rate) * 1000
             : null,
         unexpected: "unknown",

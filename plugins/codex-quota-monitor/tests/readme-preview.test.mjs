@@ -90,7 +90,7 @@ test("model overview covers current synthetic GPT families and public references
   const luna = new Set(rows.filter((row) => row.model === "gpt-5.6-luna").map((row) => row.effort));
   for (const effort of ["ultra", "max", "xhigh", "high", "medium", "low"]) assert.ok(astra.has(effort));
   for (const effort of ["max", "xhigh", "high", "medium", "low"]) assert.ok(luna.has(effort));
-  assert.ok(rows.some((row) => row.sourceKind === "local-calibrated"));
+  assert.ok(rows.some((row) => row.sourceKind === "local-average" && row.calculationKind === "turn-average"));
   assert.ok(rows.some((row) => row.sourceKind === "radar-relative"));
   assert.equal(snapshot.modelOverview.sourceUrl, "https://api.codexradar.com/api/v1/intelligence-efficiency");
   assert.match(snapshot.modelOverview.note, /订阅百分比/);

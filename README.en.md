@@ -40,13 +40,13 @@ Account and task values in these screenshots are synthetic examples. Reset annou
 
 | View | What you can check |
 | --- | --- |
-| Account | Official remaining and used percentages, the account reset countdown, and an estimate of when quota might run out at the current pace. |
+| Account | Official remaining and used percentages, a reset countdown showing seconds and the latest sample time, and an estimate of when quota might run out based on observed usage over the last 24 hours. |
 | Tasks | Total and latest-session time, estimated quota use, and average or predicted time per 1% of quota. |
 | Child tasks | Expand child rows and see their contribution to the parent task. |
 | Search | Find tasks by title keywords or full IDs, including multiple search terms. Browse five tasks per page, show more, or expand child tasks. Filters and expanded rows stay as you left them during refreshes. |
 | Allocation summary | How much observed account usage can be attributed to local tasks, and how much remains unattributed. |
 | Trend | A sliding-window trend that retains valid samples across quota resets, labels its start and latest values, and uses a legend to distinguish recorded intervals from missing or damaged intervals connected by dimmer straight lines. |
-| Models | Compare model and effort rows with local observations clearly separated from dated external reference data. External comparisons provide context; they are not subscription prices. |
+| Models | Colors and labels distinguish recent-turn means, recent local estimates, same-model reference estimates, and missing quota samples. External comparisons are not subscription prices. |
 
 Task totals cover every session in the selected window. The latest-session line includes that session and child work launched within it; a reused child contributes only the matching execution. Parent and child quota is added, while parallel elapsed time is counted once. Running tasks appear first, ordered by their latest session start, newest first. Idle tasks follow, ordered by their last completion, newest first. Elapsed totals are labeled with the selected window; once continuous work fills that window, new time replaces old time leaving the window, so the total can stay constant.
 
@@ -60,7 +60,9 @@ Use the right-edge navigation to jump between sections.
 
 The panel includes a reminder with a “Do not remind me again” checkbox, a confirmation control, and a restore control. You can choose **Economy**, **Balanced**, or **Quality** as the default-model preference. Automatic default changes must be explicitly enabled and affect new tasks only. They can be turned off, and the original defaults restored. If you have changed those defaults elsewhere, the restore action reports the conflict.
 
-Personal reset timing follows the account window shown by Codex. The two latest official global completion announcements are shown separately, while a clearly labeled third-party forecast is only reference evidence. Global announcements and third-party forecasts do not guarantee when your account will receive a reset.
+Model comparisons prefer matched own-turn means. Reference estimates can only use another effort of the same model; without that local basis, external cost references remain available while quota speed stays blank.
+
+Depletion estimates use observed account consumption over the last 24 hours across resets, with effective coverage shown when less than a day is available. Personal reset timing follows the account window shown by Codex, with a seconds countdown and the latest sample time. The two latest official global completion announcements are shown separately, while a clearly labeled third-party forecast is only reference evidence. Global announcements and third-party forecasts do not guarantee when your account will receive a reset.
 
 The monitor opens as an independent local panel; its statistics are not inserted into the chat text.
 
