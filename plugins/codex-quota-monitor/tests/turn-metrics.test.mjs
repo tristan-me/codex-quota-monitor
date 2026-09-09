@@ -129,7 +129,7 @@ test("advancing a projection ordinal does not start another turn", () => {
   assert.equal(view(e, task("a", 100), 30).latestTurnEstimatedPercent, 1);
 });
 
-test("active tasks lead and newer starts order each status group", () => {
+test("active tasks sort by start and idle tasks sort by completion", () => {
   const e = new Estimator();
   const a = { ...task("a", 0, 0), id: "a" };
   const b = { ...task("b", 0, 0), id: "b" };
@@ -151,7 +151,7 @@ test("ABC becomes ACB when B completes while A and C keep running", () => {
   const finishedB = { ...b, status: "idle", completedAt: ms(41) };
   assert.deepEqual(e.sessions([finishedB, c, a], ms(42)).map(row => row.id), ["A", "C", "B"]);
   const finishedC = { ...c, status: "idle", completedAt: ms(43) };
-  assert.deepEqual(e.sessions([finishedC, finishedB, a], ms(44)).map(row => row.id), ["A", "B", "C"]);
+  assert.deepEqual(e.sessions([finishedC, finishedB, a], ms(44)).map(row => row.id), ["A", "C", "B"]);
 });
 
 test("regressed and unknown projections do not claim an old duration as the latest turn", () => {
@@ -214,4 +214,46 @@ test("paused or stale account snapshots suppress latest-turn forecasts for roots
   const stale = c.snapshot().sessions[0];
   assert.equal(stale.latestTurnSecondsPerPercent, null);
   assert.equal(stale.children[0].latestTurnSecondsPerPercent, null);
+});
+
+test('ABCD becomes ACBD then DACB then ACDB as tasks finish and restart', () => {
+  const e=new Estimator();
+  const a={...task('a',0,30),id:'A'},b={...task('b',0,20),id:'B'},c={...task('c',0,10),id:'C'};
+  const d={...task('d-old',0,0),id:'D',status:'idle',completedAt:ms(5)};
+  const ids=(rows,at)=>e.sessions(rows,ms(at)).map(r=>r.id);
+  assert.deepEqual(ids([d,c,b,a],40),['A','B','C','D']);
+  const doneB={...b,status:'idle',completedAt:ms(41)};
+  assert.deepEqual(ids([d,c,doneB,a],42),['A','C','B','D']);
+  const liveD={...task('d-new',0,43),id:'D'};
+  assert.deepEqual(ids([liveD,c,doneB,a],44),['D','A','C','B']);
+  const doneD={...liveD,status:'idle',completedAt:ms(45)};
+  assert.deepEqual(ids([doneB,c,doneD,a],46),['A','C','D','B']);
+  // Rename/update activity must not reorder a completed task.
+  assert.deepEqual(ids([{...doneB,updatedAt:ms(48)},c,doneD,a],49),['A','C','D','B']);
+});
+
+test('idle parent completion order includes the last finished child', () => {
+  const e=new Estimator();
+  const parent={...task('p',0,0),id:'parent',status:'idle',completedAt:ms(10)};
+  const child={...task('c',0,1),id:'child',parentThreadId:'parent',status:'idle',completedAt:ms(30)};
+  const other={...task('o',0,5),id:'other',status:'idle',completedAt:ms(20)};
+  const rows=e.sessions([other,parent,child],ms(40));
+  assert.deepEqual(rows.map(r=>r.id),['parent','other']);
+  assert.equal(rows[0].lastCompletedAt,ms(30));
+});
+
+test('window task elapsed grows until the window fills, then old and new time offset', () => {
+  const e=new Estimator();
+  const hour=3600;
+  const active=task('continuous',0,0);
+  assert.equal(view(e,active,2*hour).totalElapsedSeconds,2*hour);
+  assert.equal(view(e,active,2*hour+60).totalElapsedSeconds,2*hour+60);
+  // Full-window elapsed is bounded; it must not turn into lifetime wall time.
+  assert.equal(view(e,active,25*hour).totalElapsedSeconds,24*hour);
+  assert.equal(view(e,active,25*hour+60).totalElapsedSeconds,24*hour);
+  const withPrior={...active,executionHistory:{intervals:[[ms(-24*hour),ms(0)]],coverage:'local-records'}};
+  const first=view(e,withPrior,2*hour),next=view(e,withPrior,2*hour+60);
+  assert.equal(first.totalElapsedSeconds,24*hour);
+  assert.equal(next.totalElapsedSeconds,24*hour);
+  assert.equal(next.latestTurnElapsedSeconds-first.latestTurnElapsedSeconds,60);
 });

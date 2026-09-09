@@ -119,7 +119,7 @@
               </div>
               <span id="sessionRefreshHint" class="panel-header-meta">每 5 秒更新</span>
             </div>
-            <p class="panel-note">总耗时、额度与均速按设置中的滑动窗口统计；父任务包含子任务，最近一次包含本轮启动的子任务。运行中优先使用最近 5 秒的校准估算，已完成使用该轮均速；— 表示缺少样本。额度与速度为估算，本机执行记录可能不完整。</p>
+            <p class="panel-note">耗时、额度与均速按设置中的滑动窗口统计；持续运行接近填满窗口后，新增耗时会抵消移出窗口的旧耗时，窗口内总耗时可能保持不变。父任务包含子任务，最近一次包含本轮启动的子任务。运行中优先使用最近 5 秒的校准估算，已完成使用该轮均速；— 表示缺少样本。额度与速度为估算，本机执行记录可能不完整。</p>
             <div class="session-tools">
               <label class="session-search-label" for="sessionSearch">筛选会话</label>
               <div class="session-search-control">
@@ -206,7 +206,7 @@
               <span id="trendLatest" class="panel-header-meta">等待历史样本</span>
             </div>
             <div id="trendChart" class="trend-chart" role="img" aria-label="账户余量趋势图"></div>
-            <p class="chart-caption">趋势来自本地快照中的 remainingPercent，仅用于观察变化。</p>
+            <p class="chart-caption">保留所选窗口内跨重置的有效样本；缺少样本的时段断开显示。</p>
           </section>
 
           <section id="modelSection" class="panel recommendation-panel panel-wide" aria-labelledby="recommendation-title">

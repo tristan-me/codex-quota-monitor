@@ -703,7 +703,7 @@
       const metrics = sessionTotals(session);
       const statLine = document.createElement('div');
       statLine.className = 'session-stat-line';
-      const totalLine = `任务总耗时${formatDuration(metrics.totalElapsedSeconds)}，任务消耗额度${formatTaskPercent(metrics.totalEstimatedPercent)}，平均每 1% 额度能撑 ${formatDuration(metrics.averageSecondsPerPercent)}；`;
+      const totalLine = `近${settings.retentionHours}小时任务耗时${formatDuration(metrics.totalElapsedSeconds)}，任务消耗额度${formatTaskPercent(metrics.totalEstimatedPercent)}，平均每 1% 额度能撑 ${formatDuration(metrics.averageSecondsPerPercent)}；`;
       const latestLine = `最近一次会话耗时${formatDuration(metrics.latestTurnElapsedSeconds)}，最近一次会话消耗额度${formatTaskPercent(metrics.latestTurnEstimatedPercent)}，预计接下来每 1% 额度能撑 ${formatDuration(metrics.secondsPerPercent)}`;
       statLine.append(textElement('span', 'session-stat-line-block', totalLine));
       statLine.append(textElement('span', 'session-stat-line-block', latestLine));
@@ -787,7 +787,7 @@
             const childMetrics = sessionTotals(child);
             const childLine = document.createElement('div');
             childLine.className = 'session-stat-line';
-            childLine.append(textElement('span', 'session-stat-line-block', `任务总耗时${formatDuration(childMetrics.totalElapsedSeconds)}，任务消耗额度${formatTaskPercent(childMetrics.totalEstimatedPercent)}，平均每 1% 额度能撑 ${formatDuration(childMetrics.averageSecondsPerPercent)}；`));
+            childLine.append(textElement('span', 'session-stat-line-block', `近${settings.retentionHours}小时任务耗时${formatDuration(childMetrics.totalElapsedSeconds)}，任务消耗额度${formatTaskPercent(childMetrics.totalEstimatedPercent)}，平均每 1% 额度能撑 ${formatDuration(childMetrics.averageSecondsPerPercent)}；`));
             childLine.append(textElement('span', 'session-stat-line-block', `最近一次会话耗时${formatDuration(childMetrics.latestTurnElapsedSeconds)}，最近一次会话消耗额度${formatTaskPercent(childMetrics.latestTurnEstimatedPercent)}，预计接下来每 1% 额度能撑 ${formatDuration(childMetrics.secondsPerPercent)}`));
             childRow.append(childLine);
             const latestChildCount = finiteNumber(child.latestTurnChildCount);
@@ -950,9 +950,11 @@
     const points = history
       .map((point) => ({
         at: parseDate(point && point.at),
-        value: clampPercent(point && point.remainingPercent),
+        value: finiteNumber(point && point.remainingPercent),
+        reset: point?.reset === true,
       }))
-      .filter((point) => point.value !== null);
+      .filter((point) => point.at !== null && point.value !== null && point.value >= 0 && point.value <= 100)
+      .sort((a, b) => a.at - b.at);
     if (points.length === 0) {
       chart.append(textElement('div', 'empty-state chart-empty', '尚无趋势样本 · 完成本地读取后会出现'));
       setText('trendLatest', '等待历史样本', '等待历史样本');
@@ -969,7 +971,11 @@
     const spread = Math.max(1, rawMax - rawMin);
     const min = Math.max(0, rawMin - spread * 0.12);
     const max = Math.min(100, rawMax + spread * 0.12);
-    const scaleX = (index) => padding.left + (points.length === 1 ? innerWidth / 2 : index * innerWidth / (points.length - 1));
+    const firstAt = points[0].at.getTime();
+    const timeSpan = points[points.length - 1].at.getTime() - firstAt;
+    const scaleX = (index) => padding.left + (timeSpan <= 0 ? innerWidth / 2
+      : (points[index].at.getTime() - firstAt) * innerWidth / timeSpan);
+    const gapMs = Math.max(90_000, getSettings(snapshot).quotaPollSeconds * 3_000);
     const scaleY = (value) => padding.top + ((max - value) / (max - min || 1)) * innerHeight;
 
     const svg = createSvgElement('svg', {
@@ -999,7 +1005,10 @@
       label.textContent = formatPercent(max - (max - min) * fraction);
       svg.append(label);
     });
-    const pathData = points.map((point, index) => `${index === 0 ? 'M' : 'L'} ${scaleX(index).toFixed(2)} ${scaleY(point.value).toFixed(2)}`).join(' ');
+    const pathData = points.map((point, index) => {
+      const move = index === 0 || point.at - points[index - 1].at > gapMs;
+      return `${move ? 'M' : 'L'} ${scaleX(index).toFixed(2)} ${scaleY(point.value).toFixed(2)}`;
+    }).join(' ');
     svg.append(createSvgElement('path', { d: pathData, class: 'trend-line', fill: 'none' }));
     points.forEach((point, index) => {
       const circle = createSvgElement('circle', {
@@ -1008,7 +1017,7 @@
         r: points.length > 30 ? 2.5 : 4,
         class: 'trend-point',
       });
-      circle.setAttribute('aria-label', `${formatPercent(point.value)} ${formatDate(point.at, '')}`.trim());
+      circle.setAttribute('aria-label', `${point.reset ? '额度重置后 ' : ''}${formatPercent(point.value)} ${formatDate(point.at, '')}`.trim());
       svg.append(circle);
     });
     const first = points[0];

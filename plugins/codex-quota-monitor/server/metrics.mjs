@@ -392,6 +392,20 @@ function currentTurnRange(thread, range, now, record, allowFinalGrace = true) {
   };
 }
 
+export function normalizeQuotaHistory(history, cutoff, now) {
+  const byTime = new Map();
+  for (const point of Array.isArray(history) ? history : []) {
+    if (!Number.isFinite(point?.at) || point.at < cutoff || point.at > now ||
+        !Number.isFinite(point?.remainingPercent) || point.remainingPercent < 0 || point.remainingPercent > 100) continue;
+    byTime.set(point.at, {
+      at: point.at,
+      remainingPercent: point.remainingPercent,
+      ...(point.reset === true ? { reset: true } : {}),
+    });
+  }
+  return [...byTime.values()].sort((a, b) => a.at - b.at);
+}
+
 export class Estimator {
   constructor(saved = {}) {
     const trackingSince = [
@@ -849,9 +863,7 @@ export class Estimator {
       if (lastEvidence < cutoff && !retained)
         delete s.latestTurns[id];
     }
-    s.history = (s.history || []).filter(
-      (event) => Number.isFinite(event?.at) && event.at >= cutoff && event.at <= now,
-    );
+    s.history = normalizeQuotaHistory(s.history, cutoff, now);
     for (const [id, points] of Object.entries(s.activity || {})) {
       const retained = Array.isArray(points)
         ? points.filter((point) => Number.isFinite(point?.at) && point.at >= Math.max(cutoff, now - 120000) && point.at <= now)
@@ -1499,6 +1511,7 @@ export class Estimator {
       );
     const ownerChanged = Boolean(priorOwner && priorOwner !== owner);
     if (unitChanged || ownerChanged) {
+      s.history = [];
       s.sessionLedger = {};
       s.groupObservationSeconds = {};
       s.latestTurns = {};
@@ -1533,7 +1546,6 @@ export class Estimator {
         unattributedPercent: 0,
         calibratedTokens: 0,
         calibratedPercent: 0,
-        history: [],
         activity: {},
       });
     } else {
@@ -1623,8 +1635,10 @@ export class Estimator {
     }
     s.accountUnit = unit;
     if (w.planType) s.lastKnownPlanType = w.planType;
+    const historyReset = reset && Boolean(s.previous) && !unitChanged && !ownerChanged;
     s.previous = { identity, accountKey: owner, used: w.usedPercent, at: now };
-    s.history.push({ at: now, remainingPercent: w.remainingPercent });
+    s.history.push({ at: now, remainingPercent: w.remainingPercent,
+      ...(historyReset ? { reset: true } : {}) });
     this.pruneRolling(now);
   }
 
@@ -1781,6 +1795,10 @@ export class Estimator {
         .filter((at) => Number.isFinite(at) && at <= now)
         .reduce((value, at) => value === null ? at : Math.max(value, at), null)
         ?? latestTurnInterval(thread, now)?.[0] ?? null,
+      lastCompletedAt: [thread.completedAt, latest?.completedAt,
+        ...(thread.executionHistory?.turns || []).map((turn) => turn.completedAt)]
+        .filter((at) => Number.isFinite(at) && at <= now)
+        .reduce((value, at) => value === null ? at : Math.max(value, at), null),
       latestTurnStatus: thread.status,
       latestTurnChildCount: 0,
       latestTurnEstimatedPercent: covered && latestAllocation.hasEvent
@@ -2014,10 +2032,15 @@ export class Estimator {
     const startOf = (thread) => [thread.latestTurnStartedAt, thread.startedAt, s.latestTurns[thread.id]?.startedAt]
       .filter((at) => Number.isFinite(at) && at <= now)
       .reduce((latest, at) => Math.max(latest, at), -Infinity);
+    const endOf = (thread) => [thread.lastCompletedAt, thread.completedAt,
+      s.latestTurns[thread.id]?.completedAt]
+      .filter((at) => Number.isFinite(at) && at <= now)
+      .reduce((latest, at) => Math.max(latest, at), -Infinity);
     const compare = (a, b) => {
       const activeOrder = Number(b.status === "active") - Number(a.status === "active");
       if (activeOrder) return activeOrder;
-      const first = startOf(a), second = startOf(b);
+      const first = a.status === "active" ? startOf(a) : endOf(a);
+      const second = b.status === "active" ? startOf(b) : endOf(b);
       return first === second ? orderOf(a) - orderOf(b) : second > first ? 1 : -1;
     };
     return groups.map((group) => {
@@ -2069,6 +2092,9 @@ export class Estimator {
           estimatedPercent: estimated,
           totalEstimatedPercent: estimated,
           totalElapsedSeconds,
+          lastCompletedAt: contributions.map((row) => row.lastCompletedAt)
+            .filter(Number.isFinite)
+            .reduce((latest, at) => latest === null ? at : Math.max(latest, at), null),
           totalDurationCoverage: subtree.every((member) => member.executionHistory?.coverage === "local-records")
             ? "local-records" : "partial",
           averageSecondsPerPercent: estimated > 0 && totalElapsedSeconds > 0
