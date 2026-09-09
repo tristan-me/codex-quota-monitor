@@ -278,64 +278,87 @@
                 <p class="section-kicker">RESET RADAR</p>
                 <h2 id="reset-title">重置预测</h2>
               </div>
-              <span class="radar-pulse" aria-label="仅供参考" title="仅供参考"><span aria-hidden="true"></span>估算</span>
+              <span class="panel-header-meta">本地账户 / 全局公告</span>
             </div>
-            <div class="reset-grid">
-              <div id="officialResetStat" class="reset-stat">
-                <span id="officialResetLabel">此额度窗口的官方重置</span>
-                <strong id="officialResetCountdown">等待数据</strong>
-                <small id="officialResetUpdated">等待官方额度样本</small>
-                <small id="officialResetAt">—</small>
-              </div>
-              <div class="reset-stat reset-stat-estimate">
-                <span id="exhaustionLabel">额度耗尽估计（近24小时）</span>
-                <strong id="exhaustionEstimate">等待速率样本</strong>
-                <small id="exhaustionBasis" class="exhaustion-basis">等待有效的近24小时消耗样本</small>
-                <small id="exhaustionAt">—</small>
-              </div>
-              <div class="reset-stat reset-stat-unknown">
-                <span>突发重置</span>
-                <strong id="unexpectedReset">未知</strong>
-                <small>官方未提供可预测信号</small>
-              </div>
-            </div>
-            <div class="reset-radar-secondary">
-              <article id="thirdPartyForecast" class="reset-radar-card">
-                <div class="reset-radar-card-header">
+            <div class="reset-groups">
+              <section id="localResetSection" class="reset-group" aria-labelledby="local-reset-title">
+                <div class="reset-group-header">
                   <div>
-                    <p class="section-kicker">THIRD-PARTY SIGNAL</p>
-                    <h3>第三方突发重置预测</h3>
+                    <h3 id="local-reset-title">本地重置</h3>
+                    <p>当前账户的额度窗口与耗尽估计</p>
                   </div>
-                  <span id="forecastUpdated" class="recommendation-badge">非官方 · 等待数据</span>
+                  <span class="reset-group-tag">当前账户</span>
                 </div>
-                <div class="forecast-probabilities">
-                  <div><span>未来 24 小时</span><strong id="forecastProbability24h">—</strong></div>
-                  <div><span>未来 48 小时</span><strong id="forecastProbability48h">—</strong></div>
-                  <div><span>置信度</span><strong id="forecastConfidence">—</strong></div>
+                <div class="reset-grid">
+                  <div id="officialResetStat" class="reset-stat">
+                    <span id="officialResetLabel">当前账户的窗口重置</span>
+                    <strong id="officialResetCountdown">等待数据</strong>
+                    <small id="officialResetUpdated">等待官方额度样本</small>
+                    <small id="officialResetAt">—</small>
+                  </div>
+                  <div class="reset-stat reset-stat-estimate">
+                    <span id="exhaustionLabel">额度耗尽估计（近24小时）</span>
+                    <strong id="exhaustionEstimate">等待速率样本</strong>
+                    <small id="exhaustionBasis" class="exhaustion-basis">等待有效的近24小时消耗样本</small>
+                    <small id="exhaustionAt">—</small>
+                  </div>
+                  <div class="reset-stat reset-stat-unknown">
+                    <span>突发重置</span>
+                    <strong id="unexpectedReset">未知</strong>
+                    <small>官方未提供可预测信号</small>
+                  </div>
                 </div>
-                <p id="forecastState" class="forecast-state">尚无第三方预测</p>
-                <p id="forecastWindow" class="forecast-window">参考观察窗：未宣布</p>
-                <p id="forecastCalculation" class="forecast-calculation">算法摘要：等待数据</p>
-                <p id="forecastReason" class="muted-copy">预测不承诺一定发生，也不代表官方信号。</p>
-                <div id="forecastEvidence" class="forecast-evidence"></div>
-              </article>
-              <article id="confirmedGlobalResets" class="reset-radar-card">
-                <div class="reset-radar-card-header">
+                <p class="reset-note">窗口重置时间来自当前账户的额度接口；耗尽估计按近24小时有效账户样本计算。</p>
+              </section>
+              <section id="officialNoticeSection" class="reset-group" aria-labelledby="official-notice-title">
+                <div class="reset-group-header">
                   <div>
-                    <p class="section-kicker">GLOBAL RESET HISTORY</p>
-                    <h3>最近 2 次官方重置完成公告</h3>
+                    <h3 id="official-notice-title">官方通知</h3>
+                    <p>官方发布的全局重置公告与来源</p>
                   </div>
-                  <span id="confirmedGlobalUpdated" class="panel-header-meta">等待数据</span>
+                  <span class="reset-group-tag">全局公告</span>
                 </div>
-                <div id="confirmedGlobalResetList" class="confirmed-reset-list" role="list"></div>
-              </article>
+                <article id="confirmedGlobalResets" class="reset-radar-card">
+                  <div class="reset-radar-card-header">
+                    <div>
+                      <p class="section-kicker">GLOBAL RESET HISTORY</p>
+                      <h4>最近 2 次官方重置完成公告</h4>
+                    </div>
+                    <span id="confirmedGlobalUpdated" class="panel-header-meta">等待数据</span>
+                  </div>
+                  <div id="confirmedGlobalResetList" class="confirmed-reset-list" role="list"></div>
+                </article>
+              </section>
             </div>
-            <div class="reference-links" aria-label="外部参考">
-              <a href="https://codex-reset.com/zh/" target="_blank" rel="noopener noreferrer">Codex Reset ↗</a>
-              <a href="https://codexradar.com/#model-ratings" target="_blank" rel="noopener noreferrer">Codex Radar ↗</a>
-            </div>
-            <p class="reset-note">官方重置来自额度接口；耗尽估计按近24小时有效账户样本计算，不能推断官方重置时间。</p>
-            <p id="resetRadarNotes" class="reset-note">观察窗口和第三方概率仅供参考，不承诺一定发生。</p>
+            <details class="reset-reference-details">
+              <summary>第三方预测（非官方参考）</summary>
+              <div class="reset-reference-body">
+                <article id="thirdPartyForecast" class="reset-radar-card">
+                  <div class="reset-radar-card-header">
+                    <div>
+                      <p class="section-kicker">THIRD-PARTY SIGNAL</p>
+                      <h4>第三方突发重置预测</h4>
+                    </div>
+                    <span id="forecastUpdated" class="recommendation-badge">非官方 · 等待数据</span>
+                  </div>
+                  <div class="forecast-probabilities">
+                    <div><span>未来 24 小时</span><strong id="forecastProbability24h">—</strong></div>
+                    <div><span>未来 48 小时</span><strong id="forecastProbability48h">—</strong></div>
+                    <div><span>置信度</span><strong id="forecastConfidence">—</strong></div>
+                  </div>
+                  <p id="forecastState" class="forecast-state">尚无第三方预测</p>
+                  <p id="forecastWindow" class="forecast-window">参考观察窗：未宣布</p>
+                  <p id="forecastCalculation" class="forecast-calculation">算法摘要：等待数据</p>
+                  <p id="forecastReason" class="muted-copy">预测不承诺一定发生，也不代表官方信号。</p>
+                  <div id="forecastEvidence" class="forecast-evidence"></div>
+                </article>
+                <div class="reference-links" aria-label="外部参考">
+                  <a href="https://codex-reset.com/zh/" target="_blank" rel="noopener noreferrer">Codex Reset ↗</a>
+                  <a href="https://codexradar.com/#model-ratings" target="_blank" rel="noopener noreferrer">Codex Radar ↗</a>
+                </div>
+                <p id="resetRadarNotes" class="reset-note">观察窗口和第三方概率仅供参考，不承诺一定发生。</p>
+              </div>
+            </details>
           </section>
 
           <section id="settings" class="panel settings-panel panel-wide" aria-labelledby="settings-title">

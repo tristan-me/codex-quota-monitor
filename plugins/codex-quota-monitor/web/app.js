@@ -1265,11 +1265,11 @@
     const officialStat = $('officialResetStat');
     if (officialStat) officialStat.classList.toggle('reset-stat-stale', stale);
     const resetLabel = state.mode === 'demo'
-      ? '此额度窗口的重置（演示）'
+      ? '当前账户的窗口重置（演示）'
       : stale
-        ? '此额度窗口的官方重置（样本已过期）'
-        : '此额度窗口的官方重置';
-    setText('officialResetLabel', resetLabel, '此额度窗口的官方重置');
+        ? '当前账户的窗口重置（样本已过期）'
+        : '当前账户的窗口重置';
+    setText('officialResetLabel', resetLabel, '当前账户的窗口重置');
     setText('exhaustionLabel', state.mode === 'demo' ? '近24小时耗尽估计（演示）' : '额度耗尽估计（近24小时）', '本机速率耗尽估计');
     setText('officialResetCountdown', stale ? '官方数据暂不可用' : resetSeconds === null ? '等待数据' : formatResetCountdown(resetSeconds), '等待数据');
     const resetSource = safeText(reset.source, 'account/rateLimits/read');

@@ -62,7 +62,7 @@ The panel includes a reminder with a “Do not remind me again” checkbox, a co
 
 Model comparisons prefer matched own-turn means. Reference estimates can only use another effort of the same model; without that local basis, external cost references remain available while quota speed stays blank.
 
-Depletion estimates use observed account consumption over the last 24 hours across resets, with effective coverage shown when less than a day is available. Personal reset timing follows the account window shown by Codex, with a seconds countdown and the latest sample time. The two latest official global completion announcements are shown separately, while a clearly labeled third-party forecast is only reference evidence. Global announcements and third-party forecasts do not guarantee when your account will receive a reset.
+Depletion estimates use observed account consumption over the last 24 hours across resets, with effective coverage shown when less than a day is available. Personal reset timing follows the account window shown by Codex, with a seconds countdown and the latest sample time. The reset panel separates “Local resets” (the current account countdown and depletion estimate) from “Official notices” (the two latest global completion announcements). Third-party predictions are available separately under a clearly labeled unofficial-reference disclosure. Global announcements and third-party forecasts do not guarantee when your account will receive a reset.
 
 The monitor opens as an independent local panel; its statistics are not inserted into the chat text.
 
