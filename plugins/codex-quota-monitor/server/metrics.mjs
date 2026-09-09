@@ -349,6 +349,49 @@ function intervalContained(range, turns, allTurns = turns) {
     turn.interval[0] < range.endAt && turn.interval[1] > range.startAt);
 }
 
+// A terminal projection can arrive a few seconds after the final token count
+// was recorded. Keep that small collector race attributable to the completed
+// turn, but never let a long-lived terminal row claim future samples.
+const FINAL_TOKEN_ARRIVAL_GRACE_MS = 60_000;
+
+function rangeFitsInterval(range, interval) {
+  return Number.isFinite(range?.startAt) && Number.isFinite(range?.endAt) &&
+    Array.isArray(interval) && Number.isFinite(interval[0]) &&
+    Number.isFinite(interval[1]) && interval[1] > interval[0] &&
+    range.endAt > range.startAt && range.startAt >= interval[0] &&
+    range.endAt <= interval[1];
+}
+
+function currentTurnRange(thread, range, now, record, allowFinalGrace = true) {
+  if (!record?.key || !sameTurn(record, turnIdentity(thread))) return null;
+  const turns = executionTurns(thread, now);
+  const current = turns.find((turn) => turn.current && turn.interval);
+  const containing = turns.filter((turn) => rangeFitsInterval(range, turn.interval));
+  if (current && containing.length === 1 && containing[0] === current) {
+    return {
+      key: record.key,
+      range: { startAt: range.startAt, endAt: range.endAt },
+      clipped: false,
+    };
+  }
+  if (!allowFinalGrace || !current?.interval || thread.status !== "idle" ||
+      !Number.isFinite(current.interval?.[1]) ||
+      !Number.isFinite(range?.startAt) || !Number.isFinite(range?.endAt) ||
+      range.endAt <= range.startAt || range.startAt < current.interval[0] ||
+      range.startAt >= current.interval[1] || range.endAt <= current.interval[1] ||
+      range.endAt - current.interval[1] > FINAL_TOKEN_ARRIVAL_GRACE_MS) return null;
+  // If another known execution occurs in the late sample, the delta may
+  // belong to either execution. Leave it task-scoped instead of prorating it.
+  if (turns.some((turn) => turn !== current && turn.interval &&
+      turn.interval[0] < range.endAt && turn.interval[1] > range.startAt))
+    return null;
+  return {
+    key: record.key,
+    range: { startAt: range.startAt, endAt: current.interval[1] },
+    clipped: true,
+  };
+}
+
 export class Estimator {
   constructor(saved = {}) {
     const trackingSince = [
@@ -1264,6 +1307,47 @@ export class Estimator {
     return record;
   }
 
+  repairTimestampedTurnAllocations(thread, now) {
+    const record = this.state.latestTurns[thread.id];
+    // A regressed projection must not reinterpret allocations recorded for the
+    // newer ledger generation using its older lifecycle metadata.
+    if (!record || !sameTurn(record, turnIdentity(thread))) return;
+    const allTurns = executionTurns(thread, now);
+    if (!allTurns.some((turn) => turn.interval)) return;
+    for (const allocation of this.state.rollingAllocations) {
+      if (allocation?.id !== thread.id || typeof allocation.turnKey !== "string" ||
+          !allocation.turnKey) continue;
+      const startAt = Number(allocation.startAt);
+      const endAt = Number(allocation.endAt);
+      // A point-in-time official sample has no lifecycle range to validate.
+      // Keep its task and turn attribution intact until a bounded interval is
+      // available; this avoids invalidating a valid late quota tick.
+      if (!Number.isFinite(startAt) || !Number.isFinite(endAt) || endAt <= startAt)
+        continue;
+      const range = { startAt, endAt };
+      const exact = allTurns.filter((turn) => rangeFitsInterval(range, turn.interval));
+      const current = currentTurnRange(thread, range, now, record, true);
+      if (current) {
+        allocation.turnKey = current.key;
+        if (current.clipped) allocation.endAt = current.range.endAt;
+        continue;
+      }
+      if (exact.length === 1 && executionKeyMatches(thread, exact[0], allocation.turnKey, record))
+        continue;
+      const taggedTurn = allTurns.find((turn) =>
+        turn.interval && executionKeyMatches(thread, turn, allocation.turnKey, record));
+      // Incomplete lifecycle history cannot prove that an old tagged range is
+      // wrong. Leave it intact unless the tag or an exact containing turn is
+      // represented by known bounded metadata.
+      if (exact.length === 0 && !taggedTurn) continue;
+      // A timestamped tag that no longer fits its known lifecycle is unsafe.
+      // Detach only the turn scope, preserving the full task allocation,
+      // token count, quota event link, and official attribution totals.
+      allocation.turnKey = null;
+      allocation.turnPercent = null;
+    }
+  }
+
   local(threads, now, maxGapMs = 600000) {
     const s = this.state,
       previousAt = this.lastAt;
@@ -1286,11 +1370,9 @@ export class Estimator {
       s.lastSeenAt[t.id] = now;
       const old = this.previousThreads.get(t.id);
       const latest = this.latestTurn(t, now);
-      const identified = Boolean(latest && old?.turnKey === latest.key &&
-        old.status !== "unknown" && t.status !== "unknown");
       const firstTurnInterval = continuous && !old
         ? firstObservedTurnInterval(t, previousAt, now) : null;
-      const turnIdentified = identified || Boolean(latest && firstTurnInterval);
+      this.repairTimestampedTurnAllocations(t, now);
       let interval = null;
       if (continuous && old && old.status !== "unknown" && t.status !== "unknown") {
         if (t.status === "active" && Number.isFinite(t.startedAt)) {
@@ -1310,13 +1392,36 @@ export class Estimator {
         interval = firstTurnInterval;
         latest.observedSince = Math.min(latest.observedSince, interval[0]);
       }
+      const sampledRange = firstTurnInterval
+        ? { startAt: firstTurnInterval[0], endAt: firstTurnInterval[1] }
+        : continuous && previousAt < now
+          ? { startAt: previousAt, endAt: now }
+          : null;
+      // A task can first be observed before its current active execution
+      // starts (common for children discovered in the same snapshot). The
+      // token counter is still a valid baseline; constrain only the turn
+      // candidate to the known start instead of prorating the task delta.
+      const turnSampleRange = sampledRange && !firstTurnInterval &&
+        (t.status === "active" || t.status === "idle") && Number.isFinite(t.startedAt)
+        ? { startAt: Math.max(sampledRange.startAt, t.startedAt), endAt: sampledRange.endAt }
+        : sampledRange;
+      const canIdentifyTokenTurn = Boolean(
+        firstTurnInterval ||
+        (latest && old?.turnKey === latest.key && old.status !== "unknown" &&
+          t.status !== "unknown"),
+      );
+      const tokenTurn = canIdentifyTokenTurn && sampledRange
+        ? currentTurnRange(t, turnSampleRange, now, latest, true)
+        : null;
+      const observationTurn = canIdentifyTokenTurn && interval
+        ? currentTurnRange(t, { startAt: interval[0], endAt: interval[1] }, now, latest, false)
+        : null;
       const ledger = this.ledger(t.id);
       if (interval && interval[1] > interval[0]) {
         ledger.activeSeconds += (interval[1] - interval[0]) / 1000;
         intervals.set(t.id, interval);
-        const turnKey = turnIdentified ? latest.key : null;
-        this.appendObservation(t.id, interval, turnKey, now);
-        if (turnIdentified) latest.observedSeconds += (interval[1] - interval[0]) / 1000;
+        this.appendObservation(t.id, interval, observationTurn?.key || null, now);
+        if (observationTurn) latest.observedSeconds += (interval[1] - interval[0]) / 1000;
       }
       const previous = s.lastTokens[t.id];
       const tokenKnown = Number.isFinite(t.tokens) && t.tokens >= 0 && t.tokensKnown !== false;
@@ -1330,21 +1435,21 @@ export class Estimator {
       s.lastTokens[t.id] = tokens;
       if (!/spark/.test(t.model || "")) {
         s.pending[t.id] = (s.pending[t.id] || 0) + delta;
-        const sampledRange = firstTurnTokens
+        const pendingRange = firstTurnTokens
           ? firstTurnInterval
-          : continuous && previousAt < now ? [previousAt, now] : null;
-        if (delta > 0 && sampledRange)
-          this.extendPendingRange(t.id, sampledRange);
-        if (turnIdentified && delta > 0) {
+          : sampledRange ? [sampledRange.startAt, sampledRange.endAt] : null;
+        if (delta > 0 && pendingRange)
+          this.extendPendingRange(t.id, pendingRange);
+        if (tokenTurn && delta > 0) {
           const bucket = s.pendingTurns[t.id];
           if (!bucket || bucket.key !== latest.key)
             s.pendingTurns[t.id] = { key: latest.key, tokens: delta };
           else bucket.tokens += delta;
-          if (sampledRange) this.extendPendingRange(t.id, sampledRange, latest.key);
+          this.extendPendingRange(t.id, [tokenTurn.range.startAt, tokenTurn.range.endAt], latest.key);
         }
-        if (!turnIdentified || !continuous) s.activity[t.id] = [];
+        if (!tokenTurn || !continuous) s.activity[t.id] = [];
         const points = (s.activity[t.id] ||= []);
-        points.push({ at: now, delta: turnIdentified ? delta : 0 });
+        points.push({ at: now, delta: tokenTurn ? delta : 0 });
         s.activity[t.id] = points
           .filter((p) => p.at >= now - 120000)
           .slice(-240);

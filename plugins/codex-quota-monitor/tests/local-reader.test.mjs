@@ -820,3 +820,137 @@ test("reports missing and incompatible local databases explicitly", async (t) =>
     ),
   );
 });
+
+function rolloutEvent(at, type, turnId, fields = {}) {
+  return JSON.stringify({ timestamp: new Date(at).toISOString(), type: "event_msg",
+    payload: { type, ...(turnId ? { turn_id: turnId } : {}), ...fields } }) + "\n";
+}
+
+async function laggingProjectionFixture(t, { now = 1_800_000_000_000, rollout = "" } = {}) {
+  const home = await makeHome();
+  t.after(() => fs.rm(home, { recursive: true, force: true }));
+  const file = path.join(home, "live.jsonl");
+  await fs.writeFile(file, rollout);
+  makeStateDb(home, [{ id: "self-monitor-example", updated_at_ms: now,
+    created_at_ms: now - 60_000, tokens_used: 12345, rollout_path: file, history_mode: "paginated" }]);
+  makeHistoryDb(home, [{ thread_id: "self-monitor-example", turn_id: "old-interrupted",
+    rollout_ordinal: 100, status: "interrupted", started_at: now - DAY_MS,
+    completed_at: now - DAY_MS + 19_000, duration_ms: 19_000 }]);
+  return { home, file, now, reader: new LocalReader({ codexHome: home, now: () => now }) };
+}
+
+test("fresh paginated rollout replaces a stale projected timer and caches metadata across appended events", async (t) => {
+  const now = 1_800_000_000_000;
+  const currentStart = now - 12_000;
+  const fixture = await laggingProjectionFixture(t, { now, rollout:
+    rolloutEvent(now - 50_000, "task_started", "previous-turn") +
+    rolloutEvent(now - 30_000, "task_complete", "previous-turn") +
+    rolloutEvent(currentStart, "task_started", "current-turn") });
+  const first = fixture.reader.read();
+  const thread = findThread(first, "self-monitor-example");
+  assert.equal(thread.status, "active");
+  assert.equal(thread.startedAt, currentStart);
+  assert.equal(thread.activityEvidence.turnId, "current-turn");
+  assert.equal(thread.activityEvidence.turnSequence, null);
+  assert.equal(thread.activityEvidence.source, "rollout_jsonl");
+  assert.equal(thread.tokens, 12345);
+  assert.equal(thread.executionHistory.turns.length, 3);
+  assert.ok(thread.executionHistory.intervals.some(([start, end]) => start === now - 50_000 && end === now - 30_000));
+  assert.equal(fixture.reader.read().diagnostics.rolloutBytesRead, 0);
+
+  // A turn's start remains known after growing past the original tail size.
+  await fs.appendFile(fixture.file, ('{"type":"response_item","payload":{"content":"' + 'x'.repeat(1000) + '"}}\n').repeat(9000));
+  await fs.appendFile(fixture.file, rolloutEvent(now, "token_count", null,
+    { info: { total_token_usage: { total_tokens: 999999 } } }));
+  const grown = fixture.reader.read();
+  assert.ok(grown.diagnostics.rolloutBytesRead <= LOCAL_READER_CONSTANTS.MAX_ROLLOUT_BOOTSTRAP_BYTES);
+  assert.equal(findThread(grown, "self-monitor-example").startedAt, currentStart);
+  assert.equal(findThread(grown, "self-monitor-example").tokens, 12345, "do not mix rollout and SQLite token counters");
+  const completion = rolloutEvent(now + 1_000, "task_complete", "current-turn");
+  await fs.appendFile(fixture.file, completion.slice(0, -4));
+  assert.equal(findThread(fixture.reader.read(), "self-monitor-example").status, "active");
+  await fs.appendFile(fixture.file, completion.slice(-4));
+  const complete = fixture.reader.read();
+  assert.ok(complete.diagnostics.rolloutBytesRead < 1000, "append refresh reads only new event bytes");
+  assert.equal(findThread(complete, "self-monitor-example").status, "idle");
+  assert.equal(findThread(complete, "self-monitor-example").startedAt, currentStart);
+  assert.equal(findThread(complete, "self-monitor-example").completedAt, now + 1_000);
+
+  await fs.writeFile(fixture.file, rolloutEvent(now + 2_000, "task_started", "replacement-turn"));
+  const replaced = findThread(fixture.reader.read(), "self-monitor-example");
+  assert.equal(replaced.activityEvidence.turnId, "replacement-turn");
+  assert.equal(replaced.executionHistory.turns.some((turn) => turn.turnId === "current-turn"), false);
+});
+
+test("a late old completion does not hide the newer live turn", async (t) => {
+  const now = 1_800_000_000_000;
+  const fixture = await laggingProjectionFixture(t, { now, rollout:
+    rolloutEvent(now - 50_000, "task_started", "earlier-turn") +
+    rolloutEvent(now - 10_000, "task_started", "current-turn") +
+    rolloutEvent(now - 1_000, "task_complete", "earlier-turn") });
+  const thread = findThread(fixture.reader.read(), "self-monitor-example");
+  assert.equal(thread.status, "active");
+  assert.equal(thread.activityEvidence.turnId, "current-turn");
+});
+
+test("completed projection is not resurrected by an older start or renamed thread", async (t) => {
+  const now = 1_800_000_000_000;
+  const home = await makeHome();
+  t.after(() => fs.rm(home, { recursive: true, force: true }));
+  const file = path.join(home, "done.jsonl");
+  await fs.writeFile(file, rolloutEvent(now - 100_000, "task_started", "done-turn"));
+  makeStateDb(home, [{ id: "renamed-example", name: "Renamed display", updated_at_ms: now,
+    tokens_used: 100, rollout_path: file }]);
+  makeHistoryDb(home, [{ thread_id: "renamed-example", turn_id: "done-turn", rollout_ordinal: 9,
+    status: "completed", started_at: now - 100_000, completed_at: now - 80_000 }]);
+  const thread = findThread(new LocalReader({ codexHome: home, now }).read(), "renamed-example");
+  assert.equal(thread.status, "idle");
+  assert.equal(thread.completedAt, now - 80_000);
+  assert.equal(thread.activityEvidence.source, "thread_history");
+  assert.equal(thread.executionHistory.coverage, "local-records");
+});
+
+test("fresh token evidence without a start event does not reuse a day-old completed identity", async (t) => {
+  const now = 1_800_000_000_000;
+  const fixture = await laggingProjectionFixture(t, { now,
+    rollout: rolloutEvent(now, "token_count", null, { total_tokens: 321 }) });
+  const thread = findThread(fixture.reader.read(), "self-monitor-example");
+  assert.equal(thread.status, "unknown");
+  assert.equal(thread.activityEvidence.turnId, null);
+  assert.equal(thread.startedAt, null);
+  assert.equal(thread.executionHistory.turns.length, 1);
+});
+
+test("incremental completion without a turn id closes the cached identified start", async (t) => {
+  const now = 1_800_000_000_000;
+  const fixture = await laggingProjectionFixture(t, { now,
+    rollout: rolloutEvent(now - 10_000, "task_started", "identified-turn") });
+  assert.equal(findThread(fixture.reader.read(), "self-monitor-example").status, "active");
+  await fs.appendFile(fixture.file, rolloutEvent(now, "task_complete", null));
+  const thread = findThread(fixture.reader.read(), "self-monitor-example");
+  assert.equal(thread.status, "idle");
+  assert.equal(thread.activityEvidence.turnId, "identified-turn");
+  assert.equal(thread.startedAt, now - 10_000);
+  assert.equal(thread.executionHistory.turns.filter((turn) => turn.turnId === "identified-turn").length, 1);
+});
+
+test("an identified completion joins an anonymous start without leaving phantom active work", async (t) => {
+  const now = 1_800_000_000_000;
+  const fixture = await laggingProjectionFixture(t, { now,
+    rollout: rolloutEvent(now - 10_000, "task_started", null) + rolloutEvent(now, "task_complete", "assigned-turn") });
+  const thread = findThread(fixture.reader.read(), "self-monitor-example");
+  assert.equal(thread.status, "idle");
+  assert.equal(thread.activityEvidence.turnId, "assigned-turn");
+  assert.equal(thread.startedAt, now - 10_000);
+  assert.equal(thread.executionHistory.turns.some((turn) => turn.status === "active"), false);
+});
+
+test("rollout file order resolves equal start timestamps without caching content", async (t) => {
+  const now = 1_800_000_000_000;
+  const fixture = await laggingProjectionFixture(t, { now,
+    rollout: rolloutEvent(now - 10_000, "task_started", "same-second-first") +
+      rolloutEvent(now - 10_000, "task_started", "same-second-next", { content: "PRIVATE_CONTENT_SENTINEL" }) });
+  const thread = findThread(fixture.reader.read(), "self-monitor-example");
+  assert.equal(thread.activityEvidence.turnId, "same-second-next");
+  assert.equal(JSON.stringify([...fixture.reader.rolloutCache.values()]).includes("PRIVATE_CONTENT_SENTINEL"), false);
+});

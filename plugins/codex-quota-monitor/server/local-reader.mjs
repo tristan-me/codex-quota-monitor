@@ -10,6 +10,8 @@ const MAX_RETENTION_HOURS = 168;
 const ACTIVE_STALE_WINDOW_MS = MAX_RETENTION_HOURS * 60 * 60 * 1000;
 const RECENT_THREAD_LIMIT = 200;
 const MAX_ROLLOUT_TAIL_BYTES = 8 * 1024 * 1024;
+const MAX_ROLLOUT_BOOTSTRAP_BYTES = 64 * 1024 * 1024;
+const PROJECTION_LAG_MS = 2_000;
 const MAX_ROLLOUT_LINE_BYTES = 2 * 1024 * 1024;
 const SQLITE_BIND_CHUNK = 500;
 const MAX_TURN_HISTORY_PER_THREAD = 5_000;
@@ -27,6 +29,7 @@ const ACTIVE_STATUSES = new Set([
 ]);
 
 const TERMINAL_STATUSES = new Set([
+  "idle",
   "completed",
   "complete",
   "succeeded",
@@ -308,11 +311,14 @@ function parseLegacyEventLine(line, state, sequence) {
   );
   const startedAt = explicitStartedAt ?? eventAt;
   const completedAt = explicitCompletedAt ?? eventAt;
-  const current = turnId || "__rollout_latest__";
+  let current = turnId || "__rollout_latest__";
+  if ((type === "task_complete" || type === "turn_aborted") && !turnId) {
+    current = state.latestKey || current;
+  }
 
   if (type === "task_started") {
     const previous = state.turns.get(current);
-    state.turns.set(current, {
+    state.turns.set(current, newerLifecycle(previous, {
       turnId,
       status: "inProgress",
       startedAt,
@@ -320,8 +326,8 @@ function parseLegacyEventLine(line, state, sequence) {
       eventAt: eventAt ?? startedAt,
       source: "legacy_tail",
       sequence,
-    });
-    if (!previous || sequence >= previous.sequence) state.latestKey = current;
+    }));
+    state.latestKey = current;
     state.eventCount += 1;
     return true;
   }
@@ -340,7 +346,10 @@ function parseLegacyEventLine(line, state, sequence) {
       (durationMs !== null && durationMs > 0 && completed !== null
         ? completed - durationMs
         : null);
-    state.turns.set(current, {
+    if (current !== "__rollout_latest__" && previous && !previous.turnId) {
+      state.turns.delete("__rollout_latest__");
+    }
+    state.turns.set(current, newerLifecycle(previous, {
       turnId: turnId || previous?.turnId || null,
       status: terminalStatus,
       startedAt: started,
@@ -349,7 +358,7 @@ function parseLegacyEventLine(line, state, sequence) {
       durationMs,
       source: "legacy_tail",
       sequence,
-    });
+    }));
     state.latestKey = current;
     state.eventCount += 1;
     return true;
@@ -381,60 +390,93 @@ function parseLegacyEventLine(line, state, sequence) {
   return false;
 }
 
-function readLegacyRollout(file, diagnostics) {
+function newerLifecycle(current, candidate) {
+  if (!current) return candidate;
+  if (!candidate) return current;
+  const sameTurn = current.turnId && current.turnId === candidate.turnId;
+  if (sameTurn) {
+    candidate = { ...candidate, startedAt: candidate.startedAt ?? current.startedAt };
+    const currentStart = current.startedAt ?? 0;
+    const candidateStart = candidate.startedAt ?? 0;
+    if (candidateStart !== currentStart) return candidateStart > currentStart ? candidate : current;
+    if (statusClass(current.status) === "idle" && statusClass(candidate.status) !== "idle") return current;
+    if (statusClass(candidate.status) === "idle" && statusClass(current.status) !== "idle") return candidate;
+    return (candidate.completedAt ?? candidate.eventAt ?? 0) >
+      (current.completedAt ?? current.eventAt ?? 0) ? candidate : current;
+  }
+  // A late completion for an older turn must not replace a newer live turn.
+  const currentStart = current.startedAt ?? 0;
+  const candidateStart = candidate.startedAt ?? 0;
+  if (candidateStart !== currentStart) return candidateStart > currentStart ? candidate : current;
+  if (candidate.source === "legacy_tail" && current.source === "legacy_tail" &&
+      candidate.sequence !== current.sequence) {
+    return candidate.sequence > current.sequence ? candidate : current;
+  }
+  return (candidate.completedAt ?? candidate.eventAt ?? 0) >
+    (current.completedAt ?? current.eventAt ?? 0) ? candidate : current;
+}
+
+function readLegacyRollout(file, diagnostics, { stat, previous, maxBytes = MAX_ROLLOUT_TAIL_BYTES } = {}) {
   const state = {
-    turns: new Map(),
-    latestKey: null,
-    tokens: null,
-    tokenDelta: null,
-    lastTokenAt: null,
+    turns: new Map((previous?.lifecycleTurns || []).map((turn) => [turn.turnId || "__rollout_latest__", turn])),
+    latestKey: previous?.latestTurn?.turnId || null,
+    tokens: previous?.tokens ?? null,
+    tokenDelta: previous?.tokenDelta ?? null,
+    lastTokenAt: previous?.tokenUpdatedAt ?? null,
     eventCount: 0,
     malformedLines: 0,
     bytesRead: 0,
   };
   let fd;
   try {
-    const stat = fs.statSync(file);
+    stat ||= fs.statSync(file);
     if (!stat.isFile()) throw new Error("rollout path is not a regular file");
-    const start = Math.max(0, stat.size - MAX_ROLLOUT_TAIL_BYTES);
+    const savedOffset = previous?.readOffset ?? 0;
+    const start = Math.max(savedOffset, stat.size - maxBytes, 0);
+    state.readOffset = start;
     fd = fs.openSync(file, "r");
     const buffer = Buffer.allocUnsafe(64 * 1024);
     let offset = start;
-    let carry = "";
-    let discardFirstPartialLine = start > 0;
+    let carry = Buffer.alloc(0);
+    let discardFirstPartialLine = start > 0 && start !== savedOffset;
     let sequence = 0;
+    let droppingOversizedLine = false;
     while (offset < stat.size) {
-      const readSize = fs.readSync(
-        fd,
-        buffer,
-        0,
-        Math.min(buffer.length, stat.size - offset),
-        offset,
-      );
+      const readSize = fs.readSync(fd, buffer, 0, Math.min(buffer.length, stat.size - offset), offset);
       if (!readSize) break;
       offset += readSize;
       state.bytesRead += readSize;
-      let chunk = buffer.subarray(0, readSize).toString("utf8");
-      if (discardFirstPartialLine) {
-        const firstNewline = chunk.search(/\r?\n/);
-        if (firstNewline < 0) continue;
-        chunk = chunk.slice(
-          firstNewline + (chunk[firstNewline] === "\r" ? 2 : 1),
-        );
+      let chunk = buffer.subarray(0, readSize);
+      if (discardFirstPartialLine || droppingOversizedLine) {
+        const newline = chunk.indexOf(10);
+        if (newline < 0) continue;
+        chunk = chunk.subarray(newline + 1);
         discardFirstPartialLine = false;
+        droppingOversizedLine = false;
       }
-      carry += chunk;
-      const lines = carry.split(/\r?\n/);
-      carry = lines.pop() || "";
-      for (const line of lines) {
-        sequence += 1;
-        parseLegacyEventLine(line, state, sequence);
+      const pending = Buffer.concat([carry, chunk]);
+      let lineStart = 0;
+      let newline;
+      while ((newline = pending.indexOf(10, lineStart)) >= 0) {
+        sequence = offset - pending.length + lineStart;
+        if (newline - lineStart <= MAX_ROLLOUT_LINE_BYTES) {
+          parseLegacyEventLine(pending.subarray(lineStart, newline).toString("utf8"), state, sequence);
+        }
+        lineStart = newline + 1;
+      }
+      carry = Buffer.from(pending.subarray(lineStart));
+      state.readOffset = offset - carry.length;
+      if (carry.length > MAX_ROLLOUT_LINE_BYTES) {
+        carry = Buffer.alloc(0);
+        droppingOversizedLine = true;
       }
     }
-    if (carry && !discardFirstPartialLine) {
-      sequence += 1;
-      parseLegacyEventLine(carry, state, sequence);
+    // Retain only a byte offset, never raw partial content. A complete JSON
+    // event without its trailing newline remains readable and will be retried.
+    if (carry.length && !discardFirstPartialLine && !droppingOversizedLine) {
+      parseLegacyEventLine(carry.toString("utf8"), state, offset - carry.length);
     }
+
   } catch (error) {
     diagnostics.rolloutErrors += 1;
     diagnostics.errors.push(
@@ -448,10 +490,11 @@ function readLegacyRollout(file, diagnostics) {
   diagnostics.rolloutBytesRead += state.bytesRead;
   diagnostics.malformedRolloutLines += state.malformedLines;
 
+  const lifecycleTurns = [...state.turns.values()]
+    .sort((a, b) => (b.startedAt ?? b.completedAt ?? 0) - (a.startedAt ?? a.completedAt ?? 0))
+    .slice(0, MAX_TURN_HISTORY_PER_THREAD);
   let latest = null;
-  for (const turn of state.turns.values()) {
-    if (!latest || (turn.sequence ?? 0) > (latest.sequence ?? 0)) latest = turn;
-  }
+  for (const turn of lifecycleTurns) latest = newerLifecycle(latest, turn);
   const updatedAt =
     [latest?.eventAt, latest?.completedAt, latest?.startedAt, state.lastTokenAt]
       .filter((value) => value !== null && value !== undefined)
@@ -459,17 +502,20 @@ function readLegacyRollout(file, diagnostics) {
   return {
     tokens: state.tokens,
     tokenDelta: state.tokenDelta,
+    tokenUpdatedAt: state.lastTokenAt,
+    readOffset: state.readOffset,
+    lifecycleTurns,
     updatedAt,
     latestTurn: latest,
     executionHistory: {
-      turns: [...state.turns.values()].map((turn) => ({
+      turns: lifecycleTurns.map((turn) => ({
         turnId: turn.turnId,
         startedAt: turn.startedAt,
         completedAt: turn.completedAt,
         durationMs: turn.durationMs ?? null,
         status: statusClass(turn.status),
       })),
-      intervals: [...state.turns.values()]
+      intervals: lifecycleTurns
         .filter((turn) => statusClass(turn.status) === "idle")
         .map(intervalFromTurn)
         .filter(Boolean),
@@ -548,6 +594,30 @@ function executionHistoryFromRows(rows, partial = false) {
     intervals: intervals.sort((left, right) => left[0] - right[0] || left[1] - right[1]),
     coverage: partial || incompleteEvidence || !intervals.length ? "partial" : "local-records",
     source: "thread_history",
+  };
+}
+
+function mergeExecutionHistory(projected, rollout) {
+  const turns = new Map((projected.turns || []).map((turn) => [turn.turnId || `at:${turn.startedAt}`, turn]));
+  let changed = false;
+  for (const candidate of rollout.turns || []) {
+    const key = candidate.turnId || `at:${candidate.startedAt}`;
+    const current = turns.get(key);
+    const selected = newerLifecycle(current, candidate);
+    if (selected !== current) {
+      turns.set(key, selected);
+      changed = true;
+    }
+  }
+  if (!changed) return projected;
+  const merged = [...turns.values()]
+    .sort((a, b) => (b.startedAt ?? b.completedAt ?? 0) - (a.startedAt ?? a.completedAt ?? 0))
+    .slice(0, MAX_TURN_HISTORY_PER_THREAD);
+  return {
+    turns: merged,
+    intervals: merged.map(intervalFromTurn).filter(Boolean),
+    coverage: "partial",
+    source: "thread_history+rollout_jsonl",
   };
 }
 
@@ -761,6 +831,34 @@ export class LocalReader {
       codexHome || process.env.CODEX_HOME || path.join(os.homedir(), ".codex"),
     );
     this.now = now;
+    this.rolloutCache = new Map();
+  }
+
+  readRollout(file, diagnostics, { bootstrap = false } = {}) {
+    let stat;
+    try {
+      stat = fs.statSync(file);
+    } catch {
+      return readLegacyRollout(file, diagnostics);
+    }
+    const cached = this.rolloutCache.get(file);
+    if (cached && cached.dev === stat.dev && cached.ino === stat.ino && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) {
+      return cached.result;
+    }
+    const sameFileAppend = cached && cached.dev === stat.dev && cached.ino === stat.ino &&
+      stat.size > cached.size && stat.mtimeMs >= cached.mtimeMs;
+    // Catch up across a burst using the bounded bootstrap budget. If even that
+    // leaves a gap, discard cached live state: an unseen turn may have ended.
+    const maxBytes = (!cached && bootstrap) || (sameFileAppend && stat.size - cached.result.readOffset > MAX_ROLLOUT_TAIL_BYTES)
+      ? MAX_ROLLOUT_BOOTSTRAP_BYTES : MAX_ROLLOUT_TAIL_BYTES;
+    const previous = sameFileAppend && stat.size - cached.result.readOffset <= maxBytes
+      ? cached.result : null;
+    const result = readLegacyRollout(file, diagnostics, {
+      stat, previous,
+      maxBytes,
+    });
+    if (result) this.rolloutCache.set(file, { dev: stat.dev, ino: stat.ino, size: stat.size, mtimeMs: stat.mtimeMs, result });
+    return result;
   }
 
   read({ retentionHours = 24 } = {}) {
@@ -928,6 +1026,8 @@ export class LocalReader {
         }
       }
 
+      const validRollouts = new Set([...threadsById.values()].map((row) => resolveRolloutPath(row.rollout_path, this.codexHome)));
+      for (const file of this.rolloutCache.keys()) if (!validRollouts.has(file)) this.rolloutCache.delete(file);
       const output = [];
       for (const row of threadsById.values()) {
         const id = safeText(row.id);
@@ -971,40 +1071,40 @@ export class LocalReader {
           row.rollout_path,
           this.codexHome,
         );
-        // A projected legacy turn already supplies lifecycle state.  Only
-        // fall back to the JSONL tail when the projection is missing,
-        // incomplete/stale, or the state database has no token count.  This
-        // keeps a five-second refresh from rereading every legacy transcript.
         const projectedActivity = classifyActivity(latestTurn, now);
-        const needsLegacy =
-          !latestTurn ||
-          finiteNumber(row.tokens_used) === null ||
-          projectedActivity.status === "unknown";
-        if (needsLegacy && rolloutPath) {
-          const legacy = readLegacyRollout(rolloutPath, diagnostics);
+        const lifecycleAt = latestTurn?.completedAt ?? latestTurn?.startedAt ?? 0;
+        const projectionLags = updatedAt > lifecycleAt + PROJECTION_LAG_MS;
+        const needsRollout = historyMode === "paginated" || !latestTurn || !tokensKnown ||
+          projectedActivity.status === "unknown" || projectionLags || this.rolloutCache.has(rolloutPath);
+        if (needsRollout && rolloutPath) {
+          const legacy = this.readRollout(rolloutPath, diagnostics, {
+            bootstrap: projectedActivity.status === "idle" && updatedAt > lifecycleAt + 60_000,
+          });
           if (legacy) {
-            activitySource = legacy.source;
+            const selectedTurn = newerLifecycle(latestTurn, legacy.latestTurn);
+            if (selectedTurn !== latestTurn) {
+              latestTurn = selectedTurn;
+              activitySource = legacy.source;
+            }
             eventCount = legacy.eventCount;
-            if (!latestTurn && legacy.latestTurn)
-              latestTurn = legacy.latestTurn;
-            if (
-              finiteNumber(row.tokens_used) === null &&
-              legacy.tokens !== null
-            )
-              {
-                tokens = rowTokens(legacy.tokens);
-                tokensKnown = Number.isFinite(legacy.tokens) && legacy.tokens >= 0;
-              }
-            if (legacy.tokenDelta !== null)
-              tokenDelta = rowTokens(legacy.tokenDelta);
-            if (legacy.updatedAt !== null)
-              updatedAt = Math.max(updatedAt, legacy.updatedAt);
+            if (!tokensKnown && legacy.tokens !== null) {
+              tokens = rowTokens(legacy.tokens);
+              tokensKnown = Number.isFinite(legacy.tokens) && legacy.tokens >= 0;
+              if (legacy.tokenDelta !== null) tokenDelta = rowTokens(legacy.tokenDelta);
+            }
+            if (legacy.updatedAt !== null) updatedAt = Math.max(updatedAt, legacy.updatedAt);
             if (!turnHistoryById.has(id)) executionHistory = legacy.executionHistory;
+            else executionHistory = mergeExecutionHistory(executionHistory, legacy.executionHistory);
+            // Fresh token evidence cannot belong to a much older completed turn.
+            // Without a newer start event, show unknown instead of reusing its timer.
+            if (statusClass(latestTurn?.status) === "idle" &&
+                legacy.tokenUpdatedAt > (latestTurn.completedAt ?? 0) + 60_000) {
+              latestTurn = null;
+              activitySource = legacy.source;
+            }
           }
-        } else if (historyMode === "legacy" && row.rollout_path) {
-          diagnostics.warnings.push(
-            "legacy rollout path is outside CODEX_HOME and was skipped",
-          );
+        } else if (!rolloutPath && historyMode === "legacy" && row.rollout_path) {
+          diagnostics.warnings.push("legacy rollout path is outside CODEX_HOME and was skipped");
         }
 
         const activity = classifyActivity(latestTurn, now);
@@ -1071,4 +1171,5 @@ export const LOCAL_READER_CONSTANTS = Object.freeze({
   RECENT_WINDOW_MS,
   RECENT_THREAD_LIMIT,
   MAX_ROLLOUT_TAIL_BYTES,
+  MAX_ROLLOUT_BOOTSTRAP_BYTES,
 });
