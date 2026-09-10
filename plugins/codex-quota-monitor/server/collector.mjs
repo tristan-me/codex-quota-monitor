@@ -187,14 +187,14 @@ export class Collector {
     try {
       const result = this.demo
         ? this.demoThreads()
-        : await this.reader.read({ retentionHours: this.settings.retentionHours });
+        : await this.reader.read({ retentionHours: this.settings.retentionHours, includeAllKnown: true });
       if (!Array.isArray(result?.threads))
         throw new Error("Local reader returned no thread array");
       this.threads = result.threads;
       this.diagnostics = Object.values(result.diagnostics || {}).flatMap(
         (value) =>
           typeof value === "string"
-            ? [value]
+            ? value === "all-known" ? [] : [value]
             : Array.isArray(value)
               ? value.filter((x) => typeof x === "string")
               : [],

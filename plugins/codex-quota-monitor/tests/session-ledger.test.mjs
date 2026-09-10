@@ -95,7 +95,7 @@ test("account reset clears calibration but keeps retained observation and sessio
   )[0];
   assert.equal(root.estimatedPercent, 1);
   assert.ok(root.secondsPerPercent > 0);
-  assert.equal(root.averageSecondsPerPercent, 70);
+  assert.equal(root.averageSecondsPerPercent, 60);
 });
 test("switching account never reuses the previous account session ledger", () => {
   const e = sampled();
@@ -145,7 +145,7 @@ test("temporarily missing plan metadata does not erase the same account history"
   e.quota({ ...quota(11), planType: null }, now + 70000, "account");
   assert.equal(
     e.sessions([row("root", 100)], now + 70000)[0].estimatedPercent,
-    0.5,
+    1,
   );
 });
 
@@ -167,7 +167,7 @@ test("session order stays stable through input shuffles, status changes, gaps, n
   assert.deepEqual(shuffled[0].children.map((child) => child.id), ["child-a1", "child-a2"]);
 
   const missing = e.sessions([rootC, rootAIdle, childA2, childA1], now + 2000);
-  assert.deepEqual(missing.map((session) => session.id), ["root-a", "root-c"]);
+  assert.deepEqual(missing.map((session) => session.id), ["root-a", "root-c", "root-b"]);
   const restored = e.sessions([rootC, rootBIdle, rootAIdle, childA2, childA1], now + 3000);
   assert.deepEqual(restored.map((session) => session.id), ["root-a", "root-c", "root-b"]);
   assert.deepEqual(restored[0].children.map((child) => child.id), ["child-a1", "child-a2"]);

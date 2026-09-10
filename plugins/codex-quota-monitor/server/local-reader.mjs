@@ -10,6 +10,7 @@ const MIN_RETENTION_HOURS = 1;
 const MAX_RETENTION_HOURS = 168;
 const ACTIVE_STALE_WINDOW_MS = MAX_RETENTION_HOURS * 60 * 60 * 1000;
 const RECENT_THREAD_LIMIT = 200;
+const KNOWN_THREAD_LIMIT = 10000;
 const MAX_ROLLOUT_TAIL_BYTES = 8 * 1024 * 1024;
 const MAX_ROLLOUT_BOOTSTRAP_BYTES = 64 * 1024 * 1024;
 const PROJECTION_LAG_MS = 2_000;
@@ -741,7 +742,8 @@ function recentActiveTurnRows(db, columns, cutoffMs) {
   return db.prepare(sql).all(...params);
 }
 
-function stateRowQuery(db, columns, cutoffMs) {
+function stateRowQuery(db, columns, cutoffMs, includeAllKnown = false) {
+  const limit = includeAllKnown ? KNOWN_THREAD_LIMIT : RECENT_THREAD_LIMIT;
   if (!columns.has("id")) return { rows: [], compatible: false };
   const selected = THREAD_COLUMNS.filter((name) => columns.has(name));
   const updatedMs = columns.has("updated_at_ms")
@@ -765,8 +767,8 @@ function stateRowQuery(db, columns, cutoffMs) {
   const dateExpression = dateParts.length
     ? `COALESCE(${dateParts.join(", ")})`
     : null;
-  const params = dateExpression ? [cutoffMs] : [];
-  const where = dateExpression
+  const params = dateExpression && !includeAllKnown ? [cutoffMs] : [];
+  const where = dateExpression && !includeAllKnown
     ? `(${dateExpression} >= ? OR ${dateExpression} IS NULL)`
     : "1 = 1";
   const orderParts = dateParts.map((part) => `${part} DESC`);
@@ -774,12 +776,12 @@ function stateRowQuery(db, columns, cutoffMs) {
     FROM ${quoteIdentifier("threads")}
     WHERE ${where}
     ORDER BY ${orderParts.length ? orderParts.join(", ") : quoteIdentifier("id")}
-    LIMIT ${RECENT_THREAD_LIMIT + 1}`;
+    LIMIT ${limit + 1}`;
   const rows = db.prepare(sql).all(...params);
   return {
-    rows: rows.slice(0, RECENT_THREAD_LIMIT),
+    rows: rows.slice(0, limit),
     compatible: true,
-    truncated: rows.length > RECENT_THREAD_LIMIT,
+    truncated: rows.length > limit,
   };
 }
 
@@ -890,7 +892,7 @@ export class LocalReader {
     return result;
   }
 
-  read({ retentionHours = 24 } = {}) {
+  read({ retentionHours = 24, includeAllKnown = false } = {}) {
     const now = nowValue(this.now);
     const normalizedRetentionHours = Number.isInteger(retentionHours) &&
       retentionHours >= MIN_RETENTION_HOURS && retentionHours <= MAX_RETENTION_HOURS
@@ -903,7 +905,8 @@ export class LocalReader {
       recentWindowMs,
       retentionHours: normalizedRetentionHours,
       activeStaleWindowMs: ACTIVE_STALE_WINDOW_MS,
-      recentThreadLimit: RECENT_THREAD_LIMIT,
+      recentThreadLimit: includeAllKnown ? KNOWN_THREAD_LIMIT : RECENT_THREAD_LIMIT,
+      taskScope: includeAllKnown ? "all-known" : "recent",
       stateDb: {
         path: path.join(this.codexHome, "state_5.sqlite"),
         available: false,
@@ -977,7 +980,7 @@ export class LocalReader {
             "state threads table is missing name/title or tokens_used",
           );
         }
-        const queried = stateRowQuery(stateDb, stateColumns, cutoffMs);
+        const queried = stateRowQuery(stateDb, stateColumns, cutoffMs, includeAllKnown);
         recentRows.push(...queried.rows);
         diagnostics.truncated ||= Boolean(queried.truncated);
         if (!queried.compatible)

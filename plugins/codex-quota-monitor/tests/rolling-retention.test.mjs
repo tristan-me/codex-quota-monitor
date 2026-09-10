@@ -17,7 +17,7 @@ const task = (id, tokens = 0, extra = {}) => ({
   ...extra,
 });
 
-test("rolling allocation clips timestamped events at the retention boundary", () => {
+test("task allocations retain their full timestamped amount across account windows", () => {
   const e = new Estimator();
   e.setRetentionHours(24, now);
   e.state.rollingStartedAt = now - 30 * hour;
@@ -33,12 +33,12 @@ test("rolling allocation clips timestamped events at the retention boundary", ()
     turnPercent: null,
   }];
   const row = e.sessions([task("a")], now)[0];
-  // The retained 23 hours are 23/29 of the timestamped interval.
-  assert.equal(row.totalEstimatedPercent, 20 * 23 / 29);
+  // Account retention must not prorate a known task allocation.
+  assert.equal(row.totalEstimatedPercent, 20);
   assert.equal(e.state.rollingAllocations.length, 1);
 });
 
-test("expired observation intervals leave rolling total duration and storage", () => {
+test("task observations retain their complete duration and storage", () => {
   const e = new Estimator();
   e.setRetentionHours(24, now);
   e.state.rollingStartedAt = now - 30 * hour;
@@ -50,13 +50,13 @@ test("expired observation intervals leave rolling total duration and storage", (
   const root = task("root", 0, { startedAt: null });
   const child = task("child", 0, { parentThreadId: "root", startedAt: null });
   const row = e.sessions([root, child], now)[0];
-  assert.equal(row.totalElapsedSeconds, 24 * 3600);
+  assert.equal(row.totalElapsedSeconds, 30 * 3600);
   assert.equal(e.state.rollingObservations.length, 2);
   assert.equal(e.state.rollingObservations[0].threadId, "root");
-  assert.equal(e.state.rollingObservations[0].startAt, now - 24 * hour);
+  assert.equal(e.state.rollingObservations[0].startAt, now - 30 * hour);
 });
 
-test("completed latest-turn records outside the window are pruned", () => {
+test("completed latest-turn records remain beyond the account window", () => {
   const e = new Estimator();
   e.setRetentionHours(24, now);
   e.state.latestTurns.a = {
@@ -70,7 +70,7 @@ test("completed latest-turn records outside the window are pruned", () => {
     hasAllocation: true,
   };
   e.sessions([task("a")], now);
-  assert.equal(Object.hasOwn(e.state.latestTurns, "a"), false);
+  assert.equal(Object.hasOwn(e.state.latestTurns, "a"), true);
 });
 
 test("legacy aggregate with an explicit monitoring interval is retained as marked uniform coverage", () => {
@@ -103,7 +103,7 @@ test("legacy aggregate with an explicit monitoring interval is retained as marke
     updatedAt: interval[1],
     activityEvidence: { turnId: "a-turn", lastTurnDurationMs: 5 * hour },
     executionHistory: { intervals: [interval], coverage: "local-records" },
-  })], now)[0].totalEstimatedPercent, 0.4);
+  })], now)[0].totalEstimatedPercent, 2);
 });
 
 test("legacy aggregate outside the requested window is not relabeled as current usage", () => {
@@ -224,9 +224,9 @@ test("legacy migration conserves evidenced totals and keeps latest share on its 
 
   e.setRetentionHours(2, now);
   const clipped = e.sessions([row], now)[0];
-  assert.equal(clipped.totalEstimatedPercent, 6);
+  assert.equal(clipped.totalEstimatedPercent, 10);
   assert.equal(clipped.latestTurnEstimatedPercent, 2);
-  assert.equal(e.state.sessionLedger.a.allocatedPercent, 6);
+  assert.equal(e.state.sessionLedger.a.allocatedPercent, 10);
 });
 
 test("legacy migration subtracts already timestamped allocations instead of double counting them", () => {
@@ -381,7 +381,7 @@ test("provisional calibrated usage is replaced by the next confirmed quota alloc
   assert.equal(attribution.unattributedPercent, 0);
 });
 
-test("window changes and restart retain only confirmed in-window data", () => {
+test("window changes and restart retain all confirmed task data", () => {
   const e = new Estimator({ legacyAggregateMigrated: true, retentionHours: 24 });
   e.state.rollingStartedAt = now - 30 * hour;
   e.state.rollingAllocations = [
@@ -392,14 +392,15 @@ test("window changes and restart retain only confirmed in-window data", () => {
   e.state.pending = { a: 50 };
   e.state.pendingSince = now - 10_000;
   e.pruneRolling(now);
-  assert.deepEqual(e.state.totals, { a: 2 });
+  assert.deepEqual(e.state.totals, { old: 4, a: 2 });
   const restored = new Estimator(JSON.parse(JSON.stringify(e.state)));
   restored.setRetentionHours(1, now);
   assert.deepEqual(restored.state.pending, {});
-  assert.deepEqual(restored.state.totals, { a: 2 });
+  assert.deepEqual(restored.state.totals, { old: 4, a: 2 });
   restored.pruneRolling(now + 2 * hour);
-  assert.deepEqual(restored.state.totals, {});
-  assert.deepEqual(restored.state.sessionLedger, {});
+  assert.deepEqual(restored.state.totals, { old: 4, a: 2 });
+  assert.equal(restored.state.sessionLedger.old.allocatedPercent, 4);
+  assert.equal(restored.state.rollingQuotaEvents.length, 0);
 });
 
 test("parent latest metrics include child work launched during the same turn", () => {
@@ -429,7 +430,7 @@ test("parent latest metrics include child work launched during the same turn", (
   assert.equal(row.totalElapsedSeconds, 30 * 60);
   assert.equal(row.observationSeconds, 30 * 60);
   assert.equal(row.totalEstimatedPercent, 3);
-  assert.equal(row.averageSecondsPerPercent, 600);
+  assert.equal(row.averageSecondsPerPercent, null);
   assert.equal(row.latestTurnEstimatedPercent, 3);
   assert.equal(row.ownLatestTurnEstimatedPercent, 1);
   assert.equal(row.latestTurnChildCount, 1);
@@ -438,7 +439,7 @@ test("parent latest metrics include child work launched during the same turn", (
   assert.equal(row.children[0].latestTurnEstimatedPercent, 2);
 });
 
-test("retired inactive groups leave the rolling session view", () => {
+test("retired inactive groups remain in the known task view", () => {
   const e = new Estimator({ legacyAggregateMigrated: true });
   const old = task("old", 0, {
     status: "idle",
@@ -450,7 +451,7 @@ test("retired inactive groups leave the rolling session view", () => {
   const root = { ...old, id: "root", title: "root" };
   const child = task("child", 0, { parentThreadId: "root" });
   const rows = e.sessions([old, root, child], now);
-  assert.deepEqual(rows.map((row) => row.id), ["root"]);
+  assert.deepEqual(rows.map((row) => row.id), ["root", "old"]);
   assert.equal(rows[0].children.length, 1);
   assert.equal(rows[0].status, "active");
 });

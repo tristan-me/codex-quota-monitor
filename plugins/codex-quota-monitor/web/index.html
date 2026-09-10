@@ -115,11 +115,11 @@
             <div class="panel-header">
               <div>
                 <p class="section-kicker">LIVE SESSIONS</p>
-                <h2 id="sessions-title">会话消耗（监控期间估算）</h2>
+                <h2 id="sessions-title">会话消耗（已知记录估算）</h2>
               </div>
               <span id="sessionRefreshHint" class="panel-header-meta">每 5 秒更新</span>
             </div>
-            <p class="panel-note">耗时、额度与均速按设置中的滑动窗口统计；持续运行接近填满窗口后，新增耗时会抵消移出窗口的旧耗时，窗口内总耗时可能保持不变。父任务包含子任务，最近一次包含本轮启动的子任务。运行中优先使用最近 5 秒的校准估算，已完成使用该轮均速；— 表示缺少样本。额度与速度为估算，本机执行记录可能不完整。</p>
+            <p class="panel-note">累计展示全部本机可读和已记录的任务，不受账户统计窗口限制。历史未记录或不可读的部分无法补齐；已知任务总耗时与已知额度的覆盖范围可能不同，平均值仅使用二者可对应的已知样本。父任务包含子任务，最近一次包含本轮启动的子任务。运行中优先使用最近 5 秒的校准估算，已完成使用该轮均速；— 表示缺少样本。额度与速度为估算，本机执行记录可能不完整。</p>
             <div class="session-tools">
               <label class="session-search-label" for="sessionSearch">筛选会话</label>
               <div class="session-search-control">
@@ -382,9 +382,9 @@
                   <p class="field-help">控制后端远程额度读取的最低间隔，范围 5–3600 秒。</p>
                 </div>
                 <div class="field-group">
-                  <label class="field-label" for="retentionHoursInput">统计窗口</label>
+                  <label class="field-label" for="retentionHoursInput">账户统计窗口</label>
                   <div class="input-with-unit"><input id="retentionHoursInput" type="number" min="1" max="168" step="1" inputmode="numeric"><span>小时</span></div>
-                  <p class="field-help">滑动窗口内的数据参与统计，调整不会删除 Codex 原始记录。</p>
+                  <p class="field-help">用于账户趋势、归因和当前速率校准；任务累计记录持续保留。</p>
                 </div>
                 <label class="check-row check-row-muted" for="pausedCheckbox">
                   <input id="pausedCheckbox" type="checkbox">

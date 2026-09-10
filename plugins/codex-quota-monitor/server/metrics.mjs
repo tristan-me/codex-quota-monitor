@@ -432,6 +432,7 @@ export class Estimator {
       groupObservationSeconds: {},
       sessionOrder: [],
       latestTurns: {},
+      knownThreads: {},
       pendingTurns: {},
       retentionHours: DEFAULT_RETENTION_HOURS,
       rollingStartedAt: null,
@@ -445,6 +446,8 @@ export class Estimator {
     };
     const s = this.state;
     s.sessionLedger ||= {};
+    s.knownThreads = s.knownThreads && typeof s.knownThreads === "object" && !Array.isArray(s.knownThreads)
+      ? s.knownThreads : {};
     s.groupObservationSeconds ||= {};
     s.lastSeenAt = s.lastSeenAt && typeof s.lastSeenAt === "object" && !Array.isArray(s.lastSeenAt)
       ? s.lastSeenAt : {};
@@ -533,10 +536,9 @@ export class Estimator {
     return started === null ? cutoff : Math.max(cutoff, started);
   }
 
-  sliceAllocation(event, now) {
+  sliceAllocation(event, now, cutoff = -Infinity) {
     if (!event || !Number.isFinite(event.percent) || event.percent <= 0)
       return null;
-    const cutoff = this.cutoffAt(now);
     const startAt = Number(event.startAt);
     const endAt = Number(event.endAt);
     const hasInterval = Number.isFinite(startAt) && Number.isFinite(endAt) && endAt > startAt;
@@ -600,12 +602,13 @@ export class Estimator {
     };
   }
 
-  ensureAttributionEvents() {
+  ensureAttributionEvents(now) {
     const s = this.state;
     const known = new Set(s.rollingQuotaEvents.map((event) => event.id).filter(Boolean));
     s.attributionSequence = Number.isInteger(s.attributionSequence)
       ? s.attributionSequence : 0;
     for (const allocation of s.rollingAllocations) {
+      if (!this.sliceAllocation(allocation, now, this.cutoffAt(now))) continue;
       if (allocation.attributionEventId && known.has(allocation.attributionEventId))
         continue;
       const id = `recovered-allocation:${++s.attributionSequence}`;
@@ -840,13 +843,13 @@ export class Estimator {
       Number.isFinite(event.percent) && event.percent > 0 &&
       Number.isFinite(event.tokens) && event.tokens > 0 &&
       Number.isFinite(event.startAt) && Number.isFinite(event.endAt) &&
-      event.endAt > event.startAt && event.startAt >= cutoff && event.endAt <= now);
+      event.endAt > event.startAt && event.endAt <= now);
     s.rollingObservations = s.rollingObservations
-      .filter((event) => Number.isFinite(event?.endAt) && event.endAt > cutoff && event.startAt <= now)
+      .filter((event) => Number.isFinite(event?.endAt) && Number.isFinite(event?.startAt) && event.startAt <= now)
       .map((event) => ({
         ...event,
         at: Math.min(now, event.endAt),
-        startAt: Math.max(event.startAt, cutoff),
+        startAt: event.startAt,
         endAt: Math.min(event.endAt, now),
       }))
       .filter((event) => event.endAt > event.startAt);
@@ -874,18 +877,6 @@ export class Estimator {
           : [];
       });
     s.groupObservationSeconds = {};
-    for (const [id, record] of Object.entries(s.latestTurns)) {
-      const lastEvidence = [
-        record?.completedAt,
-        record?.lastAttachedAt,
-        record?.observedSince,
-        record?.startedAt,
-      ].filter(Number.isFinite).reduce((latest, value) => Math.max(latest, value), -Infinity);
-      const retained = record?.key
-        ? this.rollingAllocation(id, now, record.key).hasEvent : false;
-      if (lastEvidence < cutoff && !retained)
-        delete s.latestTurns[id];
-    }
     s.history = normalizeQuotaHistory(s.history, cutoff, now);
     for (const [id, points] of Object.entries(s.activity || {})) {
       const retained = Array.isArray(points)
@@ -894,36 +885,9 @@ export class Estimator {
       if (retained.length) s.activity[id] = retained;
       else delete s.activity[id];
     }
-    if (Number.isFinite(s.pendingSince) && s.pendingSince < cutoff) {
-      s.pending = {};
-      s.pendingTurns = {};
-      s.pendingRanges = {};
-      s.pendingTurnRanges = {};
-      s.pendingSince = null;
-      s.gap = true;
-    }
-    const expiredSeenIds = new Set();
-    for (const [id, seenAt] of Object.entries(s.lastSeenAt)) {
-      if (!Number.isFinite(seenAt) || seenAt >= cutoff) continue;
-      const hasAllocation = s.rollingAllocations.some((event) => event.id === id);
-      const hasCompletionEstimate = s.rollingCompletionEstimates.some((event) => event.id === id);
-      const hasObservation = s.rollingObservations.some((event) => event.threadId === id);
-      const hasPending = Number.isFinite(s.pending[id]) && s.pending[id] > 0;
-      if (hasAllocation || hasCompletionEstimate || hasObservation || hasPending ||
-          s.latestTurns[id]) continue;
-      expiredSeenIds.add(id);
-      delete s.lastSeenAt[id];
-      delete s.lastTokens[id];
-      delete s.activity[id];
-    }
-    s.sessionOrder = s.sessionOrder.filter((id) =>
-      !expiredSeenIds.has(id) ||
-      s.rollingAllocations.some((event) => event.id === id) ||
-      s.rollingCompletionEstimates.some((event) => event.id === id) ||
-      s.rollingObservations.some((event) => event.threadId === id));
     if (Number.isFinite(s.rollingStartedAt))
       s.rollingStartedAt = Math.max(s.rollingStartedAt, cutoff);
-    this.ensureAttributionEvents();
+    this.ensureAttributionEvents(now);
     this.refreshRollingCoverage();
     this.rebuildRollingCaches(now);
   }
@@ -945,7 +909,7 @@ export class Estimator {
     const start = Number.isFinite(s.sessionTrackingSince)
       ? s.sessionTrackingSince : null;
     const end = Number.isFinite(s.previous?.at) ? s.previous.at : null;
-    const cutoff = this.cutoffAt(now);
+    const cutoff = -Infinity;
     const legacyLedgers = Object.entries(s.sessionLedger || {}).filter(
       ([, ledger]) => Number.isFinite(ledger?.allocatedPercent) && ledger.allocatedPercent > 0,
     );
@@ -1082,7 +1046,7 @@ export class Estimator {
   }
 
   appendObservation(threadId, interval, turnKey, now) {
-    const clipped = clipInterval(interval, this.cutoffAt(now), now);
+    const clipped = clipInterval(interval, -Infinity, now);
     if (!clipped) return;
     const events = this.state.rollingObservations;
     const previous = events.findLast((event) =>
@@ -1103,7 +1067,7 @@ export class Estimator {
   }
 
   rollingObservationSeconds(threadId, now) {
-    const cutoff = this.cutoffAt(now);
+    const cutoff = -Infinity;
     return mergeDuration(
       this.state.rollingObservations
         .filter((event) => event.threadId === threadId)
@@ -1114,7 +1078,7 @@ export class Estimator {
 
   rollingObservationForThreads(ids, now) {
     const wanted = new Set(ids);
-    const cutoff = this.cutoffAt(now);
+    const cutoff = -Infinity;
     return mergeDuration(
       this.state.rollingObservations
         .filter((event) => wanted.has(event.threadId))
@@ -1125,7 +1089,7 @@ export class Estimator {
 
   rollingObservationIntervals(ids, now) {
     const wanted = new Set(ids);
-    const cutoff = this.cutoffAt(now);
+    const cutoff = -Infinity;
     return this.state.rollingObservations
       .filter((event) => wanted.has(event.threadId))
       .map((event) => clipInterval([event.startAt, event.endAt], cutoff, now))
@@ -1162,7 +1126,7 @@ export class Estimator {
     let tokens = 0;
     let percent = 0;
     for (const event of this.state.rollingAllocations) {
-      const retained = this.sliceAllocation(event, now);
+      const retained = this.sliceAllocation(event, now, this.cutoffAt(now));
       if (!retained || !identity || retained.quotaIdentity !== identity) continue;
       if (Number.isFinite(retained.tokens) && retained.tokens > 0 && retained.percent > 0) {
         tokens += retained.tokens;
@@ -1233,7 +1197,7 @@ export class Estimator {
   completionEstimateAllocation(id, now, turnKey = null) {
     const events = this.state.rollingCompletionEstimates.filter((event) =>
       event.id === id && (!turnKey || event.turnKey === turnKey) &&
-      event.startAt >= this.cutoffAt(now) && event.endAt <= now &&
+      event.endAt <= now &&
       !this.completionEstimateCovered(event, now));
     const value = events.reduce((sum, event) => sum + event.percent, 0);
     return {
@@ -1301,13 +1265,6 @@ export class Estimator {
     if (!identity) return null;
     const s = this.state;
     let record = s.latestTurns[thread.id];
-    const lastThreadEvidence = [thread.completedAt, thread.updatedAt, thread.startedAt]
-      .filter(Number.isFinite)
-      .reduce((latest, value) => Math.max(latest, value), -Infinity);
-    if (thread.status === "idle" && lastThreadEvidence < this.cutoffAt(now)) {
-      delete s.latestTurns[thread.id];
-      return null;
-    }
     // A temporarily regressed projection must not replace the latest ledger.
     if (record && identity.startedAt !== null && record.startedAt !== null &&
         identity.startedAt < record.startedAt && !sameTurn(record, identity)) return null;
@@ -1400,6 +1357,7 @@ export class Estimator {
       s.pendingSince = null;
       s.activity = {};
     }
+    threads = this.knownTaskThreads(threads, now, false);
     const intervals = new Map();
     for (const t of threads) {
       s.lastSeenAt[t.id] = now;
@@ -1763,14 +1721,13 @@ export class Estimator {
     const latest = s.latestTurns[thread.id];
     const currentTurn = sameTurn(latest, turnIdentity(thread));
     const latestAvailable = !latest || currentTurn;
-    const cutoff = this.cutoffAt(now);
+    const cutoff = -Infinity;
     const latestSeconds = latestAvailable ? latestTurnDuration(thread, now, cutoff) : null;
     const intervals = executionIntervals(thread, now, latestAvailable, cutoff);
     const observedIntervals = this.rollingObservationIntervals([thread.id], now);
     const totalSeconds = intervals.length || observedIntervals.length
       ? mergeDuration([...intervals, ...observedIntervals]) : null;
-    const average = covered && estimate > 0 && totalSeconds > 0
-      ? totalSeconds / estimate : null;
+    const average = covered ? this.knownSampleAverage([thread], now) : null;
     const latestAllocation = currentTurn && latest
       ? this.effectiveAllocation(thread.id, now, latest.key)
       : {
@@ -1960,7 +1917,7 @@ export class Estimator {
       const member = byId.get(id);
       const row = ownRows.get(id);
       for (const turn of turns) {
-        const interval = clipInterval(turn.interval, this.cutoffAt(now), now);
+        const interval = clipInterval(turn.interval, -Infinity, now);
         if (interval) intervals.push(interval);
         if (!Number.isFinite(turn.endAt) || (turn.current && row.status === "unknown")) uncertain = true;
       }
@@ -2000,17 +1957,91 @@ export class Estimator {
     };
   }
 
-  threadInWindow(thread, now) {
-    if (thread.status === "active") return true;
-    const cutoff = this.cutoffAt(now);
-    if (executionIntervals(thread, now, true, cutoff).length) return true;
-    if (this.rollingAllocation(thread.id, now).hasEvent) return true;
-    if (this.completionEstimateAllocation(thread.id, now).hasEvent) return true;
-    if (this.rollingObservationSeconds(thread.id, now) > 0) return true;
-    if (Number.isFinite(this.state.pending[thread.id]) && this.state.pending[thread.id] > 0)
-      return true;
-    return [thread.completedAt, thread.updatedAt, thread.startedAt]
-      .some((value) => Number.isFinite(value) && value >= cutoff && value <= now);
+  knownTaskThreads(threads, now, includeMissing = true) {
+    const currentIds = new Set();
+    const result = [];
+    for (const thread of threads) {
+      currentIds.add(thread.id);
+      const previous = this.state.knownThreads[thread.id];
+      const intervals = [...(previous?.executionHistory?.intervals || []),
+        ...(thread.executionHistory?.intervals || [])]
+        .map((interval) => clipInterval(interval, -Infinity, now)).filter(Boolean)
+        .sort((a, b) => a[0] - b[0]);
+      const merged = [];
+      for (const interval of intervals) {
+        const last = merged.at(-1);
+        if (last && last[1] >= interval[0]) last[1] = Math.max(last[1], interval[1]);
+        else merged.push([...interval]);
+      }
+      const turns = new Map();
+      for (const turn of [...(previous?.executionHistory?.turns || []),
+        ...(thread.executionHistory?.turns || [])]) {
+        if (!Number.isFinite(turn?.startedAt) || !Number.isFinite(turn?.completedAt) ||
+            turn.completedAt <= turn.startedAt || turn.completedAt > now) continue;
+        turns.set(`${turn.turnId || ""}:${turn.startedAt}`, {
+          turnId: turn.turnId || null, startedAt: turn.startedAt,
+          completedAt: turn.completedAt, status: "idle",
+        });
+      }
+      const retainedTurns = [...turns.values()].sort((a, b) => a.startedAt - b.startedAt);
+      const history = {
+        intervals: merged,
+        turns: retainedTurns.slice(-5000),
+        source: thread.executionHistory?.source || "known-local-records",
+        coverage: retainedTurns.length > 5000 || thread.executionHistory?.coverage !== "local-records"
+          ? "partial" : "local-records",
+      };
+      const metadata = { executionHistory: history, lastMetadataAt: now };
+      for (const key of ["id", "title", "model", "reasoningEffort", "parentThreadId", "createdAt",
+        "source", "status", "startedAt", "completedAt", "updatedAt", "tokens", "tokensKnown"])
+        metadata[key] = thread[key] ?? null;
+      // Only lifecycle metadata is retained, never prompt or message content.
+      metadata.activityEvidence = thread.activityEvidence ? {
+        source: thread.activityEvidence.source,
+        turnId: thread.activityEvidence.turnId,
+        sequence: thread.activityEvidence.sequence,
+      } : null;
+      this.state.knownThreads[thread.id] = metadata;
+      const openTurns = (thread.executionHistory?.turns || []).filter((turn) =>
+        Number.isFinite(turn?.startedAt) && !Number.isFinite(turn?.completedAt));
+      result.push({ ...thread, executionHistory: { ...history,
+        turns: [...history.turns, ...openTurns],
+      } });
+    }
+    for (const [id, thread] of Object.entries(this.state.knownThreads)) {
+      if (!includeMissing || currentIds.has(id)) continue;
+      const knownActive = thread.status === "active"
+        ? clipInterval([thread.startedAt, thread.lastMetadataAt], -Infinity, now) : null;
+      result.push({ ...thread, executionHistory: knownActive ? {
+        ...thread.executionHistory, coverage: "partial",
+        intervals: [...(thread.executionHistory?.intervals || []), knownActive],
+      } : thread.executionHistory, status: thread.status === "idle" ? "idle" : "unknown",
+        tokensKnown: false, metadataUnavailable: true });
+    }
+    return result;
+  }
+
+  knownSampleAverage(threads, now) {
+    const matched = [];
+    let percent = 0;
+    for (const thread of threads) {
+      if (/spark/.test(thread.model || "")) continue;
+      const intervals = [...executionIntervals(thread, now),
+        ...this.rollingObservationIntervals([thread.id], now)];
+      const events = [...this.rollingAllocation(thread.id, now).events,
+        ...this.completionEstimateAllocation(thread.id, now).events];
+      for (const event of events) {
+        if (!Number.isFinite(event.startAt) || !Number.isFinite(event.endAt) ||
+            event.endAt <= event.startAt) continue;
+        const overlap = intervals.map((interval) =>
+          clipInterval(interval, event.startAt, event.endAt)).filter(Boolean);
+        const span = (event.endAt - event.startAt) / 1000;
+        if (Math.abs(mergeDuration(overlap) - span) > 0.001) continue;
+        matched.push([event.startAt, event.endAt]);
+        percent += event.percent;
+      }
+    }
+    return percent > 0 && matched.length ? mergeDuration(matched) / percent : null;
   }
 
   sessions(threads, now) {
@@ -2018,8 +2049,9 @@ export class Estimator {
     this.migrateLegacyAggregate(now, threads);
     this.rollingWindowStarted(now);
     this.pruneRolling(now);
+    threads = this.knownTaskThreads(threads, now);
     const groups = groupThreads(threads).flatMap((group) => {
-      const relevant = group.members.filter((member) => this.threadInWindow(member, now));
+      const relevant = group.members;
       if (!relevant.length) return [];
       const root = group.members.find((member) => member.id === group.id);
       const members = root && !relevant.some((member) => member.id === root.id)
@@ -2094,13 +2126,13 @@ export class Estimator {
           : subtree.some((member) => member.status === "unknown") ? "unknown" : "idle";
         const sourceIntervals = subtree.flatMap((member) => executionIntervals(
           member, now, !s.latestTurns[member.id] || sameTurn(s.latestTurns[member.id], turnIdentity(member)),
-          this.cutoffAt(now),
+          -Infinity,
         ));
         const observedIntervals = this.rollingObservationIntervals([...ids], now);
         const durationIntervals = [...sourceIntervals, ...observedIntervals];
         const totalElapsedSeconds = durationIntervals.length ? mergeDuration(durationIntervals) : null;
         const starts = subtree.filter((member) => member.status === "active" && Number.isFinite(member.startedAt))
-          .map((member) => Math.max(this.cutoffAt(now), member.startedAt));
+          .map((member) => Math.max(-Infinity, member.startedAt));
         const coverages = new Set(contributions.map((row) => row.estimateCoverage));
         const sources = [...new Set(contributions.map((row) => row.estimateSource).filter(Boolean))];
         const provisional = contributions.some((row) => row.estimateStatus === "provisional");
@@ -2111,7 +2143,7 @@ export class Estimator {
           childCount: subtree.length - 1,
           children: [],
           elapsedSeconds: starts.length ? Math.max(0, (now - Math.min(...starts)) / 1000)
-            : safeDuration(thread, now, this.cutoffAt(now)),
+            : safeDuration(thread, now, -Infinity),
           estimatedPercent: estimated,
           totalEstimatedPercent: estimated,
           totalElapsedSeconds,
@@ -2120,8 +2152,7 @@ export class Estimator {
             .reduce((latest, at) => latest === null ? at : Math.max(latest, at), null),
           totalDurationCoverage: subtree.every((member) => member.executionHistory?.coverage === "local-records")
             ? "local-records" : "partial",
-          averageSecondsPerPercent: estimated > 0 && totalElapsedSeconds > 0
-            ? totalElapsedSeconds / estimated : null,
+          averageSecondsPerPercent: this.knownSampleAverage(subtree, now),
           secondsPerPercent: status === "active" && rate > 0 ? 1 / rate : null,
           rateSource: status === "active" && rate > 0 ? "aggregate-active-task-rates" : null,
           rateEstimated: status === "active" && rate > 0,

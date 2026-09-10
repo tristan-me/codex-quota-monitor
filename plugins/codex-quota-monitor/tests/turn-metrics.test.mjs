@@ -108,7 +108,7 @@ test("root totals include children once and the latest family includes a same-tu
   assert.equal(row.latestTurnEstimatedPercent, 1);
   assert.equal(row.children[0].latestTurnEstimatedPercent, .5);
   assert.equal(row.totalElapsedSeconds, 80);
-  assert.equal(row.averageSecondsPerPercent, 80);
+  assert.equal(row.averageSecondsPerPercent, 30);
   assert.equal(row.latestTurnElapsedSeconds, 30);
   assert.equal(row.children[0].totalElapsedSeconds, 60);
 });
@@ -242,18 +242,18 @@ test('idle parent completion order includes the last finished child', () => {
   assert.equal(rows[0].lastCompletedAt,ms(30));
 });
 
-test('window task elapsed grows until the window fills, then old and new time offset', () => {
+test('known task elapsed continues growing beyond the account window', () => {
   const e=new Estimator();
   const hour=3600;
   const active=task('continuous',0,0);
   assert.equal(view(e,active,2*hour).totalElapsedSeconds,2*hour);
   assert.equal(view(e,active,2*hour+60).totalElapsedSeconds,2*hour+60);
-  // Full-window elapsed is bounded; it must not turn into lifetime wall time.
-  assert.equal(view(e,active,25*hour).totalElapsedSeconds,24*hour);
-  assert.equal(view(e,active,25*hour+60).totalElapsedSeconds,24*hour);
+  // Known execution intervals retain their full duration.
+  assert.equal(view(e,active,25*hour).totalElapsedSeconds,25*hour);
+  assert.equal(view(e,active,25*hour+60).totalElapsedSeconds,25*hour+60);
   const withPrior={...active,executionHistory:{intervals:[[ms(-24*hour),ms(0)]],coverage:'local-records'}};
   const first=view(e,withPrior,2*hour),next=view(e,withPrior,2*hour+60);
-  assert.equal(first.totalElapsedSeconds,24*hour);
-  assert.equal(next.totalElapsedSeconds,24*hour);
+  assert.equal(first.totalElapsedSeconds,26*hour);
+  assert.equal(next.totalElapsedSeconds,26*hour+60);
   assert.equal(next.latestTurnElapsedSeconds-first.latestTurnElapsedSeconds,60);
 });

@@ -171,7 +171,7 @@ test("do-not-remind preference is persisted independently of browser origin", as
   }
 });
 
-test("local discovery receives the same configurable retention window as the estimator", async () => {
+test("local discovery includes all known tasks independently of account retention", async () => {
   const f = await fixture();
   const observed = [];
   f.c.reader = {
@@ -185,8 +185,8 @@ test("local discovery receives the same configurable retention window as the est
     await f.c.update({ retentionHours: 48 });
     await f.c.local();
     assert.deepEqual(observed, [
-      { retentionHours: 24 },
-      { retentionHours: 48 },
+      { retentionHours: 24, includeAllKnown: true },
+      { retentionHours: 48, includeAllKnown: true },
     ]);
     assert.equal(f.c.estimator.state.retentionHours, 48);
   } finally {

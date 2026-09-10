@@ -652,7 +652,7 @@
     if (searchInput && searchInput.value !== state.sessionQuery && document.activeElement !== searchInput) searchInput.value = state.sessionQuery;
     setText('sessionSummaryText', summaryStatus(snapshot), '等待会话样本');
     const settings = getSettings(snapshot);
-    setText('sessionRefreshHint', `最近 ${settings.retentionHours} 小时 · 每 ${settings.pollSeconds} 秒更新`, '最近 24 小时 · 每 5 秒更新');
+    setText('sessionRefreshHint', `全部已知任务 · 每 ${settings.pollSeconds} 秒更新`, '全部已知任务 · 每 5 秒更新');
     if (!sessions) {
       list.append(textElement('div', 'empty-state', '等待本地会话快照'));
       renderSessionPagination(0, 0);
@@ -714,7 +714,7 @@
       const metrics = sessionTotals(session);
       const statLine = document.createElement('div');
       statLine.className = 'session-stat-line';
-      const totalLine = `近${settings.retentionHours}小时任务耗时${formatDuration(metrics.totalElapsedSeconds)}，任务消耗额度${formatTaskPercent(metrics.totalEstimatedPercent)}，平均每 1% 额度能撑 ${formatDuration(metrics.averageSecondsPerPercent)}；`;
+      const totalLine = `已知任务总耗时${formatDuration(metrics.totalElapsedSeconds)}，已知消耗额度${formatTaskPercent(metrics.totalEstimatedPercent)}，已知样本平均每 1% 耗时 ${formatDuration(metrics.averageSecondsPerPercent)}；`;
       const latestLine = `最近一次会话耗时${formatDuration(metrics.latestTurnElapsedSeconds)}，最近一次会话消耗额度${formatTaskPercent(metrics.latestTurnEstimatedPercent)}，预计接下来每 1% 额度能撑 ${formatDuration(metrics.secondsPerPercent)}`;
       statLine.append(textElement('span', 'session-stat-line-block', totalLine));
       statLine.append(textElement('span', 'session-stat-line-block', latestLine));
@@ -798,7 +798,7 @@
             const childMetrics = sessionTotals(child);
             const childLine = document.createElement('div');
             childLine.className = 'session-stat-line';
-            childLine.append(textElement('span', 'session-stat-line-block', `近${settings.retentionHours}小时任务耗时${formatDuration(childMetrics.totalElapsedSeconds)}，任务消耗额度${formatTaskPercent(childMetrics.totalEstimatedPercent)}，平均每 1% 额度能撑 ${formatDuration(childMetrics.averageSecondsPerPercent)}；`));
+            childLine.append(textElement('span', 'session-stat-line-block', `已知任务总耗时${formatDuration(childMetrics.totalElapsedSeconds)}，已知消耗额度${formatTaskPercent(childMetrics.totalEstimatedPercent)}，已知样本平均每 1% 耗时 ${formatDuration(childMetrics.averageSecondsPerPercent)}；`));
             childLine.append(textElement('span', 'session-stat-line-block', `最近一次会话耗时${formatDuration(childMetrics.latestTurnElapsedSeconds)}，最近一次会话消耗额度${formatTaskPercent(childMetrics.latestTurnEstimatedPercent)}，预计接下来每 1% 额度能撑 ${formatDuration(childMetrics.secondsPerPercent)}`));
             childRow.append(childLine);
             const latestChildCount = finiteNumber(child.latestTurnChildCount);

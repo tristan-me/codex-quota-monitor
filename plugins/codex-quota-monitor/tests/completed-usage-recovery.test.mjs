@@ -262,7 +262,7 @@ test("a qualified completion survives restart and later turns until its own turn
   const firstKey = estimator.state.rollingCompletionEstimates[0].turnKey;
   const expired = new Estimator(JSON.parse(JSON.stringify(estimator.state)));
   expired.setRetentionHours(24, first.startedAt + 24 * 60 * 60 * 1000 + 1);
-  assert.deepEqual(expired.state.rollingCompletionEstimates, []);
+  assert.equal(expired.state.rollingCompletionEstimates.length, 1);
 
   const restored = new Estimator(JSON.parse(JSON.stringify(estimator.state)));
   const second = historyTurn({

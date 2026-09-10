@@ -979,3 +979,20 @@ for (const mode of ['replace-inode', 'rewrite-larger']) {
     assert.equal(fresh.executionHistory.turns.some((turn) => turn.turnId === 'removed-turn'), false);
   });
 }
+
+test("all-known discovery includes more than 200 tasks and history older than 168 hours", async (t) => {
+  const home = await makeHome();
+  t.after(() => fs.rm(home, { recursive: true, force: true }));
+  const now = 1_800_000_000_000;
+  makeStateDb(home, Array.from({ length: 250 }, (_, i) => ({
+    id: `known-task-${i}`, name: `Known ${i}`, tokens_used: 100,
+    updated_at_ms: now - (30 + i) * DAY_MS,
+  })));
+  makeHistoryDb(home, []);
+  const reader = new LocalReader({ codexHome: home, now: () => now });
+  const result = reader.read({ retentionHours: 1, includeAllKnown: true });
+  assert.equal(result.threads.length, 250);
+  assert.equal(result.diagnostics.taskScope, "all-known");
+  assert.equal(result.diagnostics.truncated, false);
+  assert.equal(result.diagnostics.ok, true);
+});
