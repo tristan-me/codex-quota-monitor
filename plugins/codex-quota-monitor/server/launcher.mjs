@@ -231,8 +231,24 @@ export async function localSnapshot() {
   return response.json();
 }
 
+export async function verifyDashboard(record) {
+  const base = `http://127.0.0.1:${record.port}`;
+  for (const [route, contentType, marker] of [
+    ["/", "text/html", "sessionsSection"],
+    ["/app.js", "javascript", "fetchSnapshot"],
+    ["/style.css", "text/css", ".session-list"],
+    ["/dashboard-utils.mjs", "javascript", "resetDeadline"],
+  ]) {
+    const response = await fetch(base + route, { signal: AbortSignal.timeout(3000) });
+    if (!response.ok || !response.headers.get("content-type")?.includes(contentType) ||
+        !(await response.text()).includes(marker))
+      throw new Error("监控网页未通过检查。请停止已验证的旧监控服务，再从当前插件安装目录启动；不要修改 Codex 对话或应用文件。");
+  }
+}
+
 export async function launch({ openBrowser = false, compact = false } = {}) {
   const record = await ensureService();
+  await verifyDashboard(record);
   const url = `http://127.0.0.1:${record.port}/${compact ? "?compact=1" : ""}#${record.token}`;
   if (openBrowser) {
     const command =

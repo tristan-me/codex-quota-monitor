@@ -25,3 +25,6 @@ tmp/
 
 # Unedited recordings can contain private account and task data.
 /素材/
+
+# Local failure screenshots can contain private account and task data.
+/bad-case/

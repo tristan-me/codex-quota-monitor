@@ -39,7 +39,7 @@ test('an unavailable formerly active task freezes at its last known sample',()=>
   assert.equal(row.totalEstimatedPercent,null);
 });
 
-test('known sample mean excludes older unmatched time and incompletely covered quota intervals',()=>{
+test('known mean is the displayed known duration divided by known usage',()=>{
   const e=new Estimator({legacyAggregateMigrated:true});
   const thread=done('partial',now-1000*hour,now-999*hour);
   thread.executionHistory.intervals.push([now-10000,now]);
@@ -48,7 +48,7 @@ test('known sample mean excludes older unmatched time and incompletely covered q
   const row=e.sessions([thread],now)[0];
   assert.equal(row.totalElapsedSeconds,3610);
   assert.equal(row.totalEstimatedPercent,6);
-  assert.equal(row.averageSecondsPerPercent,5);
+  assert.equal(row.averageSecondsPerPercent,3610/6);
 });
 
 test('old task usage never returns to current calibration or account attribution',()=>{

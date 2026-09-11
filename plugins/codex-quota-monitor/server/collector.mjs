@@ -16,7 +16,7 @@ import {
 
 export const DEFAULT_SETTINGS = {
   pollSeconds: 5,
-  quotaPollSeconds: 30,
+  quotaPollSeconds: 5,
   paused: false,
   autoSwitch: false,
   hideDisclaimer: false,
@@ -40,9 +40,7 @@ export function validateSettings(patch) {
     if (!Object.hasOwn(DEFAULT_SETTINGS, key))
       throw new Error("Unknown setting: " + key);
     if (["pollSeconds", "quotaPollSeconds"].includes(key)) {
-      const min = key === "pollSeconds" ? 2 : 5;
-      const max = key === "pollSeconds" ? 300 : 3600;
-      if (!Number.isFinite(value) || value < min || value > max)
+      if (!Number.isInteger(value) || value < 5 || value > 3600)
         throw new Error("Polling frequency outside supported range");
     }
     if (key === "retentionHours") {
@@ -60,7 +58,12 @@ export function validateSettings(patch) {
     )
       throw new Error("Unknown objective");
   }
-  return patch;
+  const interval = patch.pollSeconds ?? patch.quotaPollSeconds;
+  if (patch.pollSeconds !== undefined && patch.quotaPollSeconds !== undefined &&
+      patch.pollSeconds !== patch.quotaPollSeconds)
+    throw new Error("Use one shared refresh interval");
+  return interval === undefined ? patch
+    : { ...patch, pollSeconds: interval, quotaPollSeconds: interval };
 }
 
 export class Collector {
@@ -127,7 +130,10 @@ export class Collector {
         throw new Error("Synthetic state cannot be used in live mode");
       this.settings = {
         ...DEFAULT_SETTINGS,
-        ...validateSettings(saved.settings || {}),
+        ...validateSettings({ ...saved.settings,
+          pollSeconds: Math.ceil(Math.max(5, saved.settings?.pollSeconds ?? saved.settings?.quotaPollSeconds ?? 5)),
+          quotaPollSeconds: Math.ceil(Math.max(5, saved.settings?.pollSeconds ?? saved.settings?.quotaPollSeconds ?? 5)),
+        }),
       };
       this.estimator = new Estimator(saved.estimator);
       this.estimator.setRetentionHours(this.settings.retentionHours, Date.now());
@@ -485,7 +491,7 @@ export class Collector {
   }
 
   update(patch) {
-    validateSettings(patch);
+    patch = validateSettings(patch);
     return this.mutate(async () => {
       if (!this.settings.autoSwitch && patch.autoSwitch === true) {
         // Explicit re-enablement starts a new authorization from current defaults.
@@ -613,6 +619,8 @@ export class Collector {
         attributedPercent: attribution.attributedPercent,
         estimatedPercent: attribution.attributedPercent,
         projectedTaskPercent: rollingEstimatedPercent,
+        projectedTaskScope: "all-known",
+        costCalibrationSamples: this.estimator.costCalibration?.sampleCount || 0,
         estimatedPercentCoverage: attribution.coverage,
         taskEstimateCoverage: state.rollingCoverage || "legacy-unbounded",
         calibrated: calibration.tokens > 0 && calibration.percent > 0,
@@ -662,11 +670,11 @@ export class Collector {
         ...this.messages,
         ...this.diagnostics,
         ...(this.probe === "unavailable"
-          ? ["账户接口暂未提供每个任务的独立用量；当前按本机各任务新增 token 的比例估算额度，不同模型及其他设备的使用会影响准确性。"]
+          ? ["账户接口暂未提供每个任务的独立用量；优先按记录中的模型、缓存输入和输出成本校准估算；无法重新校准的旧记录仍有偏差，其他设备使用也会影响结果。"]
           : []),
         ...(this.probe === "available"
           ? [
-              "已探测到逐任务 credits；本版本仍用本机 token 占比分摊，不宣称官方逐任务百分比。",
+              "已探测到逐任务 credits；面板百分比仍是本机成本校准估算，不宣称官方逐任务账单。",
             ]
           : []),
       ],

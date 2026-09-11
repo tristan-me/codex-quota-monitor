@@ -95,7 +95,7 @@ test("account reset clears calibration but keeps retained observation and sessio
   )[0];
   assert.equal(root.estimatedPercent, 1);
   assert.ok(root.secondsPerPercent > 0);
-  assert.equal(root.averageSecondsPerPercent, 60);
+  assert.equal(root.averageSecondsPerPercent, 70);
 });
 test("switching account never reuses the previous account session ledger", () => {
   const e = sampled();

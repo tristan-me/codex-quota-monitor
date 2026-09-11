@@ -1,3 +1,4 @@
+import { formatTaskPercent, resetDeadline } from './dashboard-utils.mjs';
 (() => {
   'use strict';
 
@@ -31,8 +32,7 @@
     modelPage: 0,
     modelSelectedId: null,
     resetEvidenceExpanded: new Set(),
-    resetBaseSeconds: null,
-    resetBaseAt: null,
+    resetDeadline: null,
     resetScheduledAt: null,
     exhaustionAt: null,
     lastFocusBeforeModal: null,
@@ -84,18 +84,6 @@
   function formatPercent(value) {
     const parsed = finiteNumber(value);
     return parsed === null ? '—' : `${parsed.toFixed(2)}%`;
-  }
-
-  function formatTaskPercent(value) {
-    const parsed = finiteNumber(value);
-    if (parsed === null) return '—';
-    if (parsed > 0 && parsed < 0.1) {
-      const exponent = Math.floor(Math.log10(parsed));
-      const decimalPlaces = 2 - exponent;
-      if (decimalPlaces <= 10) return `${parsed.toFixed(decimalPlaces)}%`;
-      return `${parsed.toExponential(2).replace('e+', 'e')}%`;
-    }
-    return formatPercent(parsed);
   }
 
   function formatCredits(value) {
@@ -244,8 +232,8 @@
     const source = isRecord(snapshot) && isRecord(snapshot.settings) ? snapshot.settings : {};
     const objective = OBJECTIVES.has(source.objective) ? source.objective : 'balanced';
     return {
-      pollSeconds: boundedNumber(source.pollSeconds, 5, 2, 300),
-      quotaPollSeconds: boundedNumber(source.quotaPollSeconds, 30, 5, 3600),
+      pollSeconds: boundedNumber(source.pollSeconds, 5, 5, 3600),
+      quotaPollSeconds: boundedNumber(source.pollSeconds ?? source.quotaPollSeconds, 5, 5, 3600),
       retentionHours: boundedNumber(source.retentionHours, 24, 1, 168),
       paused: source.paused === true,
       autoSwitch: source.autoSwitch === true,
@@ -481,7 +469,7 @@
     const status = state.offline ? '服务已关闭或链接已过期' : state.error ? '连接异常' : accountError ? '账户额度读取异常' : state.fetching ? '读取本地快照' : '已连接';
     const statusText = state.offline
       ? `${status} · 请重新运行 Open-Monitor.command，或从新任务打开监控器`
-      : `${status} · 本地每 ${settings.pollSeconds} 秒刷新 · ${updated}${settings.paused ? ' · 远程额度暂停' : ''}`;
+      : `${status} · 每 ${settings.pollSeconds} 秒刷新 · ${updated}${settings.paused ? ' · 后台读取暂停' : ''}`;
     setText('globalStatus', statusText, '等待连接');
     setText('compactStatusText', statusText, '等待连接');
   }
@@ -714,12 +702,21 @@
       const metrics = sessionTotals(session);
       const statLine = document.createElement('div');
       statLine.className = 'session-stat-line';
-      const totalLine = `已知任务总耗时${formatDuration(metrics.totalElapsedSeconds)}，已知消耗额度${formatTaskPercent(metrics.totalEstimatedPercent)}，已知样本平均每 1% 耗时 ${formatDuration(metrics.averageSecondsPerPercent)}；`;
-      const latestLine = `最近一次会话耗时${formatDuration(metrics.latestTurnElapsedSeconds)}，最近一次会话消耗额度${formatTaskPercent(metrics.latestTurnEstimatedPercent)}，预计接下来每 1% 额度能撑 ${formatDuration(metrics.secondsPerPercent)}`;
+      const totalLine = `已知任务总耗时${formatDuration(metrics.totalElapsedSeconds, '暂无记录')}，已知消耗额度${formatTaskPercent(metrics.totalEstimatedPercent)}，平均每 1% 耗时 ${formatDuration(metrics.averageSecondsPerPercent, '待估算')}；`;
+      const latestLine = `最近一次会话耗时${formatDuration(metrics.latestTurnElapsedSeconds, '暂无记录')}，最近一次会话消耗额度${formatTaskPercent(metrics.latestTurnEstimatedPercent)}，预计接下来每 1% 额度能撑 ${formatDuration(metrics.secondsPerPercent, '待估算')}`;
       statLine.append(textElement('span', 'session-stat-line-block', totalLine));
       statLine.append(textElement('span', 'session-stat-line-block', latestLine));
       row.append(statLine);
 
+      if (Array.isArray(session.historicalModels) && session.historicalModels.length > 1)
+        row.append(textElement('p', 'session-scope-note', `历史总额包含 ${session.historicalModels.join('、')}；上方显示的是当前模型。`));
+      if (session.estimateUsesModelCosts) {
+        row.append(textElement('p', 'session-scope-note', session.estimateIncludesLegacy
+          ? '按各轮模型、缓存输入和输出用量校准估算；总额仍含无法重新校准的旧版记录。'
+          : '按各轮模型、缓存输入和输出用量校准估算；不是官方逐任务账单。'));
+      }
+      if (session.latestTurnRateSource === 'history-average-fallback')
+        row.append(textElement('p', 'session-scope-note', '本轮样本不足，接下来耗时参考已知任务均速。'));
       if (session.estimateIncludesRecovery === true || session.ownEstimateIncludesRecovery === true) {
         row.append(textElement('p', 'session-scope-note', session.latestTurnEstimateIncludesRecovery === true
           ? '最近一轮的部分额度由已记录的 token 用量校准补估。'
@@ -798,8 +795,8 @@
             const childMetrics = sessionTotals(child);
             const childLine = document.createElement('div');
             childLine.className = 'session-stat-line';
-            childLine.append(textElement('span', 'session-stat-line-block', `已知任务总耗时${formatDuration(childMetrics.totalElapsedSeconds)}，已知消耗额度${formatTaskPercent(childMetrics.totalEstimatedPercent)}，已知样本平均每 1% 耗时 ${formatDuration(childMetrics.averageSecondsPerPercent)}；`));
-            childLine.append(textElement('span', 'session-stat-line-block', `最近一次会话耗时${formatDuration(childMetrics.latestTurnElapsedSeconds)}，最近一次会话消耗额度${formatTaskPercent(childMetrics.latestTurnEstimatedPercent)}，预计接下来每 1% 额度能撑 ${formatDuration(childMetrics.secondsPerPercent)}`));
+            childLine.append(textElement('span', 'session-stat-line-block', `已知任务总耗时${formatDuration(childMetrics.totalElapsedSeconds, '暂无记录')}，已知消耗额度${formatTaskPercent(childMetrics.totalEstimatedPercent)}，平均每 1% 耗时 ${formatDuration(childMetrics.averageSecondsPerPercent, '待估算')}；`));
+            childLine.append(textElement('span', 'session-stat-line-block', `最近一次会话耗时${formatDuration(childMetrics.latestTurnElapsedSeconds, '暂无记录')}，最近一次会话消耗额度${formatTaskPercent(childMetrics.latestTurnEstimatedPercent)}，预计接下来每 1% 额度能撑 ${formatDuration(childMetrics.secondsPerPercent, '待估算')}`));
             childRow.append(childLine);
             const latestChildCount = finiteNumber(child.latestTurnChildCount);
             if (latestChildCount !== null && latestChildCount > 0) {
@@ -1258,9 +1255,8 @@
   function renderReset(snapshot) {
     const reset = isRecord(snapshot) && isRecord(snapshot.reset) ? snapshot.reset : {};
     const stale = reset.stale === true;
-    const resetSeconds = stale ? null : finiteNumber(reset.secondsUntil);
-    state.resetBaseSeconds = resetSeconds;
-    state.resetBaseAt = resetSeconds === null ? null : Date.now();
+    state.resetDeadline = resetDeadline(reset, snapshot.now);
+    const resetSeconds = state.resetDeadline === null ? null : (state.resetDeadline - Date.now()) / 1000;
     state.resetScheduledAt = reset.scheduledAt;
     const officialStat = $('officialResetStat');
     if (officialStat) officialStat.classList.toggle('reset-stat-stale', stale);
@@ -1483,11 +1479,9 @@
   function renderSettings(snapshot) {
     const settings = getSettings(snapshot);
     const poll = $('pollSecondsInput');
-    const quotaPoll = $('quotaPollSecondsInput');
     const retention = $('retentionHoursInput');
     const paused = $('pausedCheckbox');
     if (poll && document.activeElement !== poll) poll.value = String(settings.pollSeconds);
-    if (quotaPoll && document.activeElement !== quotaPoll) quotaPoll.value = String(settings.quotaPollSeconds);
     if (retention && document.activeElement !== retention) retention.value = String(settings.retentionHours);
     if (paused && document.activeElement !== paused) paused.checked = settings.paused;
     const reminder = $('restoreDisclaimerBtn');
@@ -1496,9 +1490,8 @@
   }
 
   function renderCountdowns() {
-    if (state.resetBaseSeconds !== null && state.resetBaseAt !== null) {
-      const elapsed = (Date.now() - state.resetBaseAt) / 1000;
-      const remaining = state.resetBaseSeconds - elapsed;
+    if (Number.isFinite(state.resetDeadline)) {
+      const remaining = (state.resetDeadline - Date.now()) / 1000;
       setText('officialResetCountdown', formatResetCountdown(remaining), '等待数据');
     }
     const exhaustion = parseDate(state.exhaustionAt);
@@ -1739,9 +1732,7 @@
     if (retry) retry.addEventListener('click', () => fetchSnapshot());
 
     const poll = $('pollSecondsInput');
-    if (poll) poll.addEventListener('change', () => queueSettingsPatch({ pollSeconds: readIntegerInput('pollSecondsInput', 2, 300, 5) }));
-    const quotaPoll = $('quotaPollSecondsInput');
-    if (quotaPoll) quotaPoll.addEventListener('change', () => queueSettingsPatch({ quotaPollSeconds: readIntegerInput('quotaPollSecondsInput', 5, 3600, 30) }));
+    if (poll) poll.addEventListener('change', () => queueSettingsPatch({ pollSeconds: readIntegerInput('pollSecondsInput', 5, 3600, 5) }));
     const retention = $('retentionHoursInput');
     if (retention) retention.addEventListener('change', () => queueSettingsPatch({ retentionHours: readIntegerInput('retentionHoursInput', 1, 168, 24) }));
     const paused = $('pausedCheckbox');

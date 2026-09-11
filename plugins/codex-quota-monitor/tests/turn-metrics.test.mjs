@@ -108,7 +108,7 @@ test("root totals include children once and the latest family includes a same-tu
   assert.equal(row.latestTurnEstimatedPercent, 1);
   assert.equal(row.children[0].latestTurnEstimatedPercent, .5);
   assert.equal(row.totalElapsedSeconds, 80);
-  assert.equal(row.averageSecondsPerPercent, 30);
+  assert.equal(row.averageSecondsPerPercent, 80);
   assert.equal(row.latestTurnElapsedSeconds, 30);
   assert.equal(row.children[0].totalElapsedSeconds, 60);
 });

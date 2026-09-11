@@ -2449,9 +2449,8 @@ body.compact .topbar,
 body.compact #modeBanner,
 body.compact #demoWatermark,
 body.compact #sectionNav,
-body.compact #globalError,
 body.compact #globalStatus,
-body.compact .full-dashboard {
+body.compact #hero {
   display: none !important;
 }
 

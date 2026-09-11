@@ -1,3 +1,5 @@
+import { COST_RATE_VERSION } from './usage-cost.mjs';
+import { calibrateCosts, estimateKnownCost } from './cost-estimator.mjs';
 // Estimates are an allocation model, not an official subscription ledger.
 export const DEFAULT_RETENTION_HOURS = 24;
 export const MIN_RETENTION_HOURS = 1;
@@ -434,6 +436,12 @@ export class Estimator {
       latestTurns: {},
       knownThreads: {},
       pendingTurns: {},
+      pendingCosts: {},
+      pendingCostTokens: {},
+      pendingCostIncomplete: {},
+      pendingCostTurns: {},
+      costActivity: {},
+      costCalibrationSamples: [],
       retentionHours: DEFAULT_RETENTION_HOURS,
       rollingStartedAt: null,
       rollingAllocations: [],
@@ -477,6 +485,11 @@ export class Estimator {
     }
     // Unconfirmed deltas and recent rates cannot cross a collector restart.
     s.pending = {};
+    s.pendingCosts = {};
+    s.pendingCostTokens = {};
+    s.pendingCostIncomplete = {};
+    s.pendingCostTurns = {};
+    s.costActivity = {};
     s.pendingTurns = {};
     s.pendingRanges = {};
     s.pendingTurnRanges = {};
@@ -511,6 +524,7 @@ export class Estimator {
     }
     this.lastAt = null;
     this.previousThreads = new Map();
+    this.costCalibration = null;
   }
 
   ledger(id) {
@@ -1209,6 +1223,8 @@ export class Estimator {
   }
 
   effectiveAllocation(id, now, turnKey = null) {
+    const weighted = estimateKnownCost(this.state, id, now, this.costCalibration, turnKey);
+    if (weighted) return weighted;
     const direct = this.directAllocation(id, now, turnKey);
     const completion = this.completionEstimateAllocation(id, now, turnKey);
     if (!completion.hasEvent) return {
@@ -1351,6 +1367,11 @@ export class Estimator {
     if (previousAt !== null && !continuous) {
       s.gap = true;
       s.pending = {};
+      s.pendingCosts = {};
+      s.pendingCostTokens = {};
+      s.pendingCostIncomplete = {};
+      s.pendingCostTurns = {};
+      s.costActivity = {};
       s.pendingTurns = {};
       s.pendingRanges = {};
       s.pendingTurnRanges = {};
@@ -1358,11 +1379,56 @@ export class Estimator {
       s.activity = {};
     }
     threads = this.knownTaskThreads(threads, now, false);
+    this.costCalibration = calibrateCosts(s, now);
     const intervals = new Map();
     for (const t of threads) {
       s.lastSeenAt[t.id] = now;
       const old = this.previousThreads.get(t.id);
       const latest = this.latestTurn(t, now);
+      if (continuous && old && (t.costEpoch !== old.costEpoch ||
+          (Number.isFinite(t.usageCredits) && Number.isFinite(old.usageCredits) && t.usageCredits < old.usageCredits))) {
+        s.pendingCostIncomplete[t.id] = true;
+        s.costActivity[t.id] = [];
+      }
+      if (continuous && old && t.costRateVersion === COST_RATE_VERSION &&
+          old.costRateVersion === COST_RATE_VERSION && t.costEpoch === old.costEpoch && Number.isFinite(t.usageCredits) &&
+          Number.isFinite(old.usageCredits) && t.usageCredits >= old.usageCredits) {
+        const credits = t.usageCredits - old.usageCredits;
+        const points = (s.costActivity[t.id] ||= []);
+        points.push({ startAt: previousAt, endAt: now, credits });
+        s.costActivity[t.id] = points.filter(point => point.endAt >= now - 120000);
+        if (credits > 0) {
+          s.pendingCosts[t.id] = (s.pendingCosts[t.id] || 0) + credits;
+          if (Number.isFinite(t.costTokens) && Number.isFinite(old.costTokens) && t.costTokens >= old.costTokens)
+            s.pendingCostTokens[t.id] = (s.pendingCostTokens[t.id] || 0) + t.costTokens - old.costTokens;
+          const oldTurn = s.pendingCostTurns[t.id];
+          const scope = old.turnKey === latest?.key && old.status !== "unknown" && t.status !== "unknown"
+            ? currentTurnRange(t, { startAt: previousAt, endAt: now }, now, latest) : null;
+          if (scope) s.pendingCostTurns[t.id] = {
+            key: scope.key, credits: (oldTurn?.key === scope.key ? oldTurn.credits : 0) + credits,
+          };
+        }
+      }
+
+      if (continuous && !old && Number.isFinite(t.createdAt) &&
+          t.createdAt >= previousAt && t.createdAt <= now) {
+        const firstCost = (t.usageTurns || []).find(turn =>
+          turn.turnId === latest?.turnId && turn.startedAt >= previousAt - 1000 &&
+          turn.costRateVersion === COST_RATE_VERSION && turn.costCoverage === "recorded-turn");
+        if (firstCost?.costCredits > 0) {
+          const startAt = Math.max(previousAt, t.createdAt, firstCost.startedAt);
+          const endAt = Math.min(now, firstCost.completedAt ?? now);
+          if (endAt > startAt) {
+            s.pendingCosts[t.id] = (s.pendingCosts[t.id] || 0) + firstCost.costCredits;
+            s.pendingCostTokens[t.id] = (s.pendingCostTokens[t.id] || 0) + firstCost.costTokens;
+            s.pendingCostTurns[t.id] = { key: latest.key, credits: firstCost.costCredits };
+            s.costActivity[t.id] = [{ startAt, endAt, credits: firstCost.costCredits }];
+            this.extendPendingRange(t.id, [startAt, endAt]);
+            this.extendPendingRange(t.id, [startAt, endAt], latest.key);
+          }
+        }
+      }
+
       const firstTurnInterval = continuous && !old
         ? firstObservedTurnInterval(t, previousAt, now) : null;
       this.repairTimestampedTurnAllocations(t, now);
@@ -1457,6 +1523,7 @@ export class Estimator {
           startedAt: t.startedAt,
           completedAt: t.completedAt,
           turnKey: sameTurn(s.latestTurns[t.id], turnIdentity(t)) ? s.latestTurns[t.id]?.key : null,
+          usageCredits: t.usageCredits, costTokens: t.costTokens, costRateVersion: t.costRateVersion, costEpoch: t.costEpoch,
           tokensKnown: Number.isFinite(t.tokens) && t.tokens >= 0 && t.tokensKnown !== false,
         },
       ]),
@@ -1501,6 +1568,9 @@ export class Estimator {
       s.pendingTurnRanges = {};
       s.pendingSince = null;
       s.rollingAllocations = [];
+      s.costCalibrationSamples = [];
+      s.costAccountStart = now;
+      this.costCalibration = null;
       s.rollingCompletionEstimates = [];
       s.rollingObservations = [];
       s.rollingQuotaEvents = [];
@@ -1519,6 +1589,11 @@ export class Estimator {
         since: now,
         totals: {},
         pending: {},
+        pendingCosts: {},
+        pendingCostTokens: {},
+        pendingCostIncomplete: {},
+        pendingCostTurns: {},
+        costActivity: {},
         pendingTurns: {},
         pendingRanges: {},
         pendingTurnRanges: {},
@@ -1532,9 +1607,13 @@ export class Estimator {
     } else {
       const delta = Math.max(0, w.usedPercent - s.previous.used);
       if (delta > 0) {
-        const entries = Object.entries(s.pending).filter(
+        const tokenEntries = Object.entries(s.pending).filter(
           ([, count]) => Number.isFinite(count) && count > 0,
         );
+        const useCosts = Object.values(s.pendingCosts).some(value => value > 0) &&
+          tokenEntries.every(([id, tokens]) => s.pendingCosts[id] > 0 && !s.pendingCostIncomplete[id] &&
+            (!Number.isFinite(s.pendingCostTokens[id]) || s.pendingCostTokens[id] >= tokens));
+        const entries = useCosts ? Object.entries(s.pendingCosts).filter(([, value]) => value > 0) : tokenEntries;
         const sum = entries.reduce((total, [, count]) => total + count, 0);
         s.observedPercent += delta;
         s.attributionSequence = Number.isInteger(s.attributionSequence)
@@ -1558,12 +1637,13 @@ export class Estimator {
             ledger.hasAllocation = true;
             if (ledger.activeSeconds > 0) ledger.timedPercent += allocated;
             const latest = s.latestTurns[id];
-            const bucket = s.pendingTurns[id];
+            const bucket = useCosts ? s.pendingCostTurns[id] : s.pendingTurns[id];
             let turnPercent = 0;
             let turnTokens = 0;
-            if (latest && bucket?.key === latest.key && bucket.tokens > 0) {
-              turnPercent = allocated * Math.min(1, bucket.tokens / count);
-              turnTokens = Math.min(count, bucket.tokens);
+            const bucketAmount = useCosts ? bucket?.credits : bucket?.tokens;
+            if (latest && bucket?.key === latest.key && bucketAmount > 0) {
+              turnPercent = allocated * Math.min(1, bucketAmount / count);
+              turnTokens = Math.min(count, bucketAmount);
             }
             const appendAllocation = ({ percent, tokens, key = null, range = null }) => {
               if (!(percent > 0)) return;
@@ -1576,7 +1656,8 @@ export class Estimator {
                   ? { startAt: range.startAt, endAt: Math.min(now, range.endAt) }
                   : {}),
                 percent,
-                tokens: tokens > 0 ? tokens : null,
+                tokens: useCosts ? ((s.pending[id] || 0) * tokens / count) || null : tokens > 0 ? tokens : null,
+                ...(useCosts ? { costCredits: tokens, costRateVersion: COST_RATE_VERSION } : {}),
                 turnKey: key,
                 turnPercent: key ? percent : null,
                 quotaIdentity: identity,
@@ -1600,6 +1681,10 @@ export class Estimator {
           }
         } else s.unattributedPercent += delta;
         s.pending = {};
+        s.pendingCosts = {};
+        s.pendingCostTokens = {};
+        s.pendingCostIncomplete = {};
+        s.pendingCostTurns = {};
         s.pendingTurns = {};
         s.pendingRanges = {};
         s.pendingTurnRanges = {};
@@ -1608,6 +1693,11 @@ export class Estimator {
     }
     if (s.gap) {
       s.pending = {};
+      s.pendingCosts = {};
+      s.pendingCostTokens = {};
+      s.pendingCostIncomplete = {};
+      s.pendingCostTurns = {};
+      s.costActivity = {};
       s.pendingTurns = {};
       s.pendingRanges = {};
       s.pendingTurnRanges = {};
@@ -1632,6 +1722,17 @@ export class Estimator {
       .filter((p) => p.at > points[0].at)
       .reduce((sum, p) => sum + p.delta, 0);
     return tokens > 0 ? tokens / elapsed : null;
+  }
+
+  recentCostRate(id, now) {
+    let credits = 0, coveredMs = 0;
+    for (const point of this.state.costActivity[id] || []) {
+      if (point.endAt <= point.startAt || point.endAt - point.startAt > 7500) continue;
+      const overlap = Math.max(0, Math.min(now, point.endAt) - Math.max(now - 5000, point.startAt));
+      coveredMs += overlap;
+      credits += point.credits * overlap / (point.endAt - point.startAt);
+    }
+    return coveredMs >= 4000 && credits > 0 ? credits / (coveredMs / 1000) : null;
   }
 
   recentTokenRate(id, now, includeZero = false) {
@@ -1727,7 +1828,7 @@ export class Estimator {
     const observedIntervals = this.rollingObservationIntervals([thread.id], now);
     const totalSeconds = intervals.length || observedIntervals.length
       ? mergeDuration([...intervals, ...observedIntervals]) : null;
-    const average = covered ? this.knownSampleAverage([thread], now) : null;
+    const average = covered && estimate > 0 && totalSeconds > 0 ? totalSeconds / estimate : null;
     const latestAllocation = currentTurn && latest
       ? this.effectiveAllocation(thread.id, now, latest.key)
       : {
@@ -1740,25 +1841,30 @@ export class Estimator {
         };
     const turnAverage = latestSeconds > 0 && latestAllocation.value > 0
       ? latestSeconds / latestAllocation.value : null;
-    const recentRate = currentTurn && thread.status === "active" && percentRate > 0
-      ? 1 / percentRate
-      : null;
+    const costRate = this.recentCostRate(thread.id, now);
+    const weightedRate = costRate > 0 && this.costCalibration?.percentPerCredit > 0
+      ? costRate * this.costCalibration.percentPerCredit : null;
+    const useWeighted = latestAllocation.source === "model-token-cost-calibrated";
+    const usableRate = useWeighted ? weightedRate : percentRate;
+    const recentRate = currentTurn && thread.status === "active" && usableRate > 0
+      ? 1 / usableRate : null;
+    const historyRate = latestAvailable && latestSeconds > 0 ? average : null;
     const latestRate = thread.status === "active"
-      ? recentRate ?? turnAverage
-      : thread.status === "idle" ? turnAverage : null;
+      ? recentRate ?? turnAverage ?? historyRate
+      : thread.status === "idle" ? turnAverage ?? historyRate : null;
     const futureRate = thread.status === "active" ? latestRate : null;
     const latestRateSource = recentRate !== null
-      ? "recent-token-calibrated"
+      ? useWeighted ? "recent-model-cost-calibrated" : "recent-token-calibrated"
       : latestRate !== null
-        ? thread.status === "active"
-          ? "turn-average-fallback"
-          : "turn-completed-fallback"
+        ? turnAverage === null ? "history-average-fallback"
+          : thread.status === "active" ? "turn-average-fallback" : "turn-completed-fallback"
         : null;
     return {
       id: thread.id,
       title: thread.title || thread.id,
       model: thread.model,
       reasoningEffort: thread.reasoningEffort,
+      historicalModels: [...new Set((thread.usageTurns || []).map(turn => turn.model).filter(Boolean))],
       status: thread.status,
       parentThreadId: thread.parentThreadId || null,
       childCount: 0,
@@ -1770,6 +1876,8 @@ export class Estimator {
       estimateSource: estimate === null ? null : allocation.source,
       estimateEstimated: estimate !== null,
       estimateIncludesRecovery: allocation.includesCompletionRecovery === true,
+      estimateUsesModelCosts: allocation.source === "model-token-cost-calibrated",
+      estimateIncludesLegacy: allocation.includesLegacy === true,
       latestTurnElapsedSeconds: latestSeconds,
       latestTurnStartedAt: [thread.startedAt, latest?.startedAt]
         .filter((at) => Number.isFinite(at) && at <= now)
@@ -1824,13 +1932,17 @@ export class Estimator {
       observationSince: this.observationSince(now),
       confidence: "低：本机归因假设",
       method:
-        "按监控期间本机 token 增量分摊账户变化；不同模型权重未知，可能混入其他设备消耗",
+        allocation.source === "model-token-cost-calibrated"
+          ? "按各轮模型、缓存输入和输出用量及账户变化校准；历史折算和跨设备影响仍有误差"
+          : "缺少成本明细的记录按 token 比例粗估，尚未完成模型成本校准",
       activityEvidence: thread.activityEvidence,
     };
   }
 
   allocationForTurns(thread, turns, now) {
     if (/spark/.test(thread.model || "")) return { value: 0, hasEvent: false };
+    const weighted = estimateKnownCost(this.state, thread.id, now, this.costCalibration, null, turns);
+    if (weighted) return weighted;
     const record = this.state.latestTurns[thread.id];
     const allTurns = executionTurns(thread, now);
     const matches = (key) => turns.some((turn) => executionKeyMatches(thread, turn, key, record));
@@ -1931,13 +2043,10 @@ export class Estimator {
     }
     const elapsed = intervals.length ? mergeDuration(intervals) : null;
     const average = elapsed > 0 && value > 0 ? elapsed / value : null;
-    const calibration = this.rollingCalibration(now);
-    const recent = activeRows.map((row) => /spark/.test(row.model || "")
-      ? null : this.recentTokenRate(row.id, now, true));
-    const recentTokens = recent.reduce((sum, rate) => sum + (rate || 0), 0);
-    const recentRate = recent.length && recent.every(Number.isFinite) && recentTokens > 0 &&
-      calibration.tokens > 0 && calibration.percent > 0
-      ? calibration.tokens / (recentTokens * calibration.percent) : null;
+    const recentRows = activeRows.filter(row => row.latestTurnSecondsPerPercent > 0 &&
+      /^recent-/.test(row.latestTurnRateSource || ""));
+    const recentRate = activeRows.length && recentRows.length === activeRows.length
+      ? 1 / recentRows.reduce((sum, row) => sum + 1 / row.latestTurnSecondsPerPercent, 0) : null;
     const active = activeRows.length > 0;
     const prediction = active ? recentRate ?? average : uncertain ? null : average;
     return {
@@ -1991,9 +2100,29 @@ export class Estimator {
         coverage: retainedTurns.length > 5000 || thread.executionHistory?.coverage !== "local-records"
           ? "partial" : "local-records",
       };
-      const metadata = { executionHistory: history, lastMetadataAt: now };
+      const usageTurns = new Map((previous?.usageTurns || []).map(turn =>
+        [`${turn.turnId || ""}:${turn.startedAt}`, turn]));
+      for (const turn of [...(thread.usageTurns || []), ...(thread.executionHistory?.turns || [])]) {
+        if (!(turn?.costCredits > 0) || !Number.isFinite(turn.startedAt)) continue;
+        const key = `${turn.turnId || ""}:${turn.startedAt}`;
+        const old = usageTurns.get(key);
+        if (old?.costTokens > turn.costTokens) {
+          usageTurns.set(key, { ...old, completedAt: turn.completedAt ?? old.completedAt, costCoverage: "partial-turn" });
+          continue;
+        }
+        usageTurns.set(key, {
+          turnId: turn.turnId, startedAt: turn.startedAt, completedAt: turn.completedAt,
+          model: turn.model, reasoningEffort: turn.reasoningEffort, serviceTier: turn.serviceTier,
+          costCredits: turn.costCredits, costTokens: turn.costTokens,
+          costRateVersion: turn.costRateVersion, costCoverage: turn.costCoverage,
+          tokenUsage: turn.tokenUsage,
+        });
+      }
+      const knownUsage = [...usageTurns.values()].sort((a, b) => a.startedAt - b.startedAt).slice(-5000);
+      const metadata = { executionHistory: history, usageTurns: knownUsage, lastMetadataAt: now };
       for (const key of ["id", "title", "model", "reasoningEffort", "parentThreadId", "createdAt",
-        "source", "status", "startedAt", "completedAt", "updatedAt", "tokens", "tokensKnown"])
+        "source", "status", "startedAt", "completedAt", "updatedAt", "tokens", "tokensKnown",
+        "usageCredits", "costTokens", "costRateVersion"])
         metadata[key] = thread[key] ?? null;
       // Only lifecycle metadata is retained, never prompt or message content.
       metadata.activityEvidence = thread.activityEvidence ? {
@@ -2004,7 +2133,7 @@ export class Estimator {
       this.state.knownThreads[thread.id] = metadata;
       const openTurns = (thread.executionHistory?.turns || []).filter((turn) =>
         Number.isFinite(turn?.startedAt) && !Number.isFinite(turn?.completedAt));
-      result.push({ ...thread, executionHistory: { ...history,
+      result.push({ ...thread, usageTurns: knownUsage, executionHistory: { ...history,
         turns: [...history.turns, ...openTurns],
       } });
     }
@@ -2021,35 +2150,13 @@ export class Estimator {
     return result;
   }
 
-  knownSampleAverage(threads, now) {
-    const matched = [];
-    let percent = 0;
-    for (const thread of threads) {
-      if (/spark/.test(thread.model || "")) continue;
-      const intervals = [...executionIntervals(thread, now),
-        ...this.rollingObservationIntervals([thread.id], now)];
-      const events = [...this.rollingAllocation(thread.id, now).events,
-        ...this.completionEstimateAllocation(thread.id, now).events];
-      for (const event of events) {
-        if (!Number.isFinite(event.startAt) || !Number.isFinite(event.endAt) ||
-            event.endAt <= event.startAt) continue;
-        const overlap = intervals.map((interval) =>
-          clipInterval(interval, event.startAt, event.endAt)).filter(Boolean);
-        const span = (event.endAt - event.startAt) / 1000;
-        if (Math.abs(mergeDuration(overlap) - span) > 0.001) continue;
-        matched.push([event.startAt, event.endAt]);
-        percent += event.percent;
-      }
-    }
-    return percent > 0 && matched.length ? mergeDuration(matched) / percent : null;
-  }
-
   sessions(threads, now) {
     const s = this.state;
     this.migrateLegacyAggregate(now, threads);
     this.rollingWindowStarted(now);
     this.pruneRolling(now);
     threads = this.knownTaskThreads(threads, now);
+    this.costCalibration = calibrateCosts(s, now);
     const groups = groupThreads(threads).flatMap((group) => {
       const relevant = group.members;
       if (!relevant.length) return [];
@@ -2152,7 +2259,8 @@ export class Estimator {
             .reduce((latest, at) => latest === null ? at : Math.max(latest, at), null),
           totalDurationCoverage: subtree.every((member) => member.executionHistory?.coverage === "local-records")
             ? "local-records" : "partial",
-          averageSecondsPerPercent: this.knownSampleAverage(subtree, now),
+          averageSecondsPerPercent: estimated > 0 && totalElapsedSeconds > 0
+            ? totalElapsedSeconds / estimated : null,
           secondsPerPercent: status === "active" && rate > 0 ? 1 / rate : null,
           rateSource: status === "active" && rate > 0 ? "aggregate-active-task-rates" : null,
           rateEstimated: status === "active" && rate > 0,
@@ -2162,6 +2270,9 @@ export class Estimator {
           estimateSource: sources.length === 1 ? sources[0] : sources.length ? "mixed" : null,
           estimateEstimated: estimated !== null,
           estimateIncludesRecovery: includesRecovery,
+          historicalModels: [...new Set(contributions.flatMap(row => row.historicalModels || []))],
+          estimateUsesModelCosts: contributions.some(row => row.estimateUsesModelCosts),
+          estimateIncludesLegacy: contributions.some(row => row.estimateIncludesLegacy),
           estimateStatus: known ? provisional ? "provisional" : "allocated" : "unavailable",
           rateStatus: status === "active" ? rate > 0 ? "recent-estimate" : "no-recent-sample"
             : estimated > 0 && totalElapsedSeconds > 0 ? "observed-average" : "no-timed-sample",

@@ -317,7 +317,7 @@ test("a turn-key event with no turn amount is unavailable rather than a false ze
   const row = e.sessions([task("a")], now)[0];
   assert.equal(row.totalEstimatedPercent, 2);
   assert.equal(row.latestTurnEstimatedPercent, null);
-  assert.equal(row.latestTurnSecondsPerPercent, null);
+  assert.equal(row.latestTurnSecondsPerPercent, 2.5);
 });
 
 test("active turn falls back to its retained average when the latest sample has no token delta", () => {
@@ -430,7 +430,7 @@ test("parent latest metrics include child work launched during the same turn", (
   assert.equal(row.totalElapsedSeconds, 30 * 60);
   assert.equal(row.observationSeconds, 30 * 60);
   assert.equal(row.totalEstimatedPercent, 3);
-  assert.equal(row.averageSecondsPerPercent, null);
+  assert.equal(row.averageSecondsPerPercent, 600);
   assert.equal(row.latestTurnEstimatedPercent, 3);
   assert.equal(row.ownLatestTurnEstimatedPercent, 1);
   assert.equal(row.latestTurnChildCount, 1);

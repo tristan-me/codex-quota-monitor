@@ -1,6 +1,6 @@
 {
   "name": "codex-quota-monitor",
-  "version": "0.2.0+codex.20260910031314",
+  "version": "0.2.0+codex.20260911124757",
   "description": "Local Codex quota windows, transparent session estimates, and cost-aware model defaults.",
   "author": {
     "name": "Quanli Li",

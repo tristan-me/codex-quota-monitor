@@ -208,9 +208,27 @@ test("snapshot exposes numeric zero attribution while waiting for a quota change
     assert.equal(snapshot.attribution.excludedIncompleteHistory, false);
     assert.match(
       snapshot.diagnostics.join(" "),
-      /账户接口暂未提供每个任务的独立用量；当前按本机各任务新增 token 的比例估算额度，不同模型及其他设备的使用会影响准确性。/,
+      /账户接口暂未提供每个任务的独立用量；优先按记录中的模型、缓存输入和输出成本校准估算/,
     );
   } finally {
     await f.cleanup();
   }
+});
+
+test('one refresh setting migrates split legacy intervals without losing retained task data',async()=>{
+  const f=await fixture();
+  try {
+    await writeFile(join(f.dir,'state.json'),JSON.stringify({mode:'live',
+      settings:{pollSeconds:5,quotaPollSeconds:30,paused:true},
+      estimator:{legacyAggregateMigrated:true,rollingAllocations:[{id:'saved-task',at:Date.now()-1000,percent:0.5}]}}));
+    await f.c.init();
+    assert.equal(f.c.settings.pollSeconds,5);
+    assert.equal(f.c.settings.quotaPollSeconds,5);
+    assert.equal(f.c.estimator.state.totals['saved-task'],0.5);
+    await f.c.update({pollSeconds:12});
+    assert.equal(f.c.settings.quotaPollSeconds,12);
+    await f.c.update({quotaPollSeconds:8});
+    assert.equal(f.c.settings.pollSeconds,8);
+    assert.throws(()=>f.c.update({pollSeconds:5,quotaPollSeconds:10}),/shared/);
+  } finally { await f.cleanup(); }
 });

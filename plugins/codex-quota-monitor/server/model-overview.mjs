@@ -159,7 +159,7 @@ function aggregateLocalRates(sessions) {
     // average labeled with its latest model setting. Prefer the stable turn
     // mean; a recent rate is only a fallback when that mean is unavailable.
     const current = hasTurnScope
-      ? turnAverage === null && entry.latestTurnRateSource === "recent-token-calibrated"
+      ? turnAverage === null && ["recent-token-calibrated", "recent-model-cost-calibrated"].includes(entry.latestTurnRateSource)
         ? finite(entry.secondsPerPercent) : null
       : finite(entry.secondsPerPercent);
     const average = hasTurnScope ? turnAverage : finite(entry.averageSecondsPerPercent);

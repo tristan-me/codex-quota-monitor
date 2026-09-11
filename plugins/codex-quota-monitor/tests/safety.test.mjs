@@ -45,6 +45,7 @@ test("malformed settings and out-of-range frequencies fail closed", () => {
     assert.throws(() => validateSettings(patch));
   assert.deepEqual(validateSettings({ pollSeconds: 5, autoSwitch: false }), {
     pollSeconds: 5,
+    quotaPollSeconds: 5,
     autoSwitch: false,
   });
 });

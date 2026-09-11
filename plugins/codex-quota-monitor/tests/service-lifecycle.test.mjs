@@ -231,3 +231,26 @@ test("acquireServiceLock can repair a stale dead-owner lock", async (t) => {
   await handle.close();
   await fs.unlink(lockPath);
 });
+
+test('dashboard asset check rejects an API-only server returning a file error page',async(t)=>{
+  const {verifyDashboard}=await import('../server/launcher.mjs');
+  const server=createServer((req,res)=>{
+    res.writeHead(200,{'Content-Type':'application/json'});
+    res.end(JSON.stringify(req.url==='/api/health'?{app:'codex-quota-monitor',ready:true}:{error:'EPERM'}));
+  });
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  t.after(()=>closeServer(server));
+  await assert.rejects(verifyDashboard({port:server.address().port}),/网页未通过检查/);
+});
+
+test('ready service delivers the full page and its JavaScript module dependency',async(t)=>{
+  const {verifyDashboard}=await import('../server/launcher.mjs');
+  const dataDir=await mkdtemp(path.join(os.tmpdir(),'quota-assets-'));
+  t.after(()=>rm(dataDir,{recursive:true,force:true}));
+  const service=await startService({dataDir,collector:makeCollector()});
+  t.after(()=>service.close());
+  await verifyDashboard(service);
+  const module=await fetch(`http://127.0.0.1:${service.port}/dashboard-utils.mjs`);
+  assert.match(module.headers.get('content-type'),/javascript/);
+  assert.match(await module.text(),/resetDeadline/);
+});

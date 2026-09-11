@@ -1,6 +1,7 @@
+import { COST_RATE_VERSION, tokenUsage, usageDifference, usageCredits, addUsage } from './usage-cost.mjs';
 import { DatabaseSync } from "node:sqlite";
 import fs from "node:fs";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 
@@ -289,6 +290,17 @@ function parseLegacyEventLine(line, state, sequence) {
         ? row.event_msg
         : null;
   if (!payload || typeof payload !== "object") return false;
+  if (outerType === "turn_context") {
+    const turnId = safeText(payload.turn_id);
+    state.currentContext = {
+      turnId, model: safeText(payload.model),
+      reasoningEffort: safeText(payload.effort ?? payload.reasoning_effort),
+      serviceTier: safeText(payload.service_tier),
+    };
+    const turn = state.turns.get(turnId || state.latestKey);
+    if (turn) Object.assign(turn, state.currentContext);
+    return true;
+  }
   const type =
     typeof payload.type === "string"
       ? payload.type.trim().toLowerCase()
@@ -321,7 +333,9 @@ function parseLegacyEventLine(line, state, sequence) {
   if (type === "task_started") {
     const previous = state.turns.get(current);
     state.turns.set(current, newerLifecycle(previous, {
+      ...(previous?.startedAt === startedAt ? previous : {}),
       turnId,
+      usageStartSeen: true,
       status: "inProgress",
       startedAt,
       completedAt: null,
@@ -330,6 +344,7 @@ function parseLegacyEventLine(line, state, sequence) {
       sequence,
     }));
     state.latestKey = current;
+    if (state.currentContext?.turnId !== turnId) state.currentContext = null;
     state.eventCount += 1;
     return true;
   }
@@ -352,6 +367,7 @@ function parseLegacyEventLine(line, state, sequence) {
       state.turns.delete("__rollout_latest__");
     }
     state.turns.set(current, newerLifecycle(previous, {
+      ...previous,
       turnId: turnId || previous?.turnId || null,
       status: terminalStatus,
       startedAt: started,
@@ -383,6 +399,35 @@ function parseLegacyEventLine(line, state, sequence) {
     const delta = nestedTokenNumber(
       lastUsage?.total_tokens ?? payload.last_total_tokens,
     );
+    const cumulative = tokenUsage(totalUsage);
+    const last = tokenUsage(lastUsage);
+    let increment = usageDifference(cumulative, state.lastTokenUsage);
+    if (!increment && cumulative && last && cumulative.totalTokens === last.totalTokens)
+      increment = last;
+    // A reset or a truncated beginning establishes a new baseline. Never count
+    // the prior turn's last request again just because a snapshot repeats it.
+    if (cumulative) state.lastTokenUsage = cumulative;
+    const owner = turnId || state.currentContext?.turnId || state.latestKey;
+    const turn = state.turns.get(owner);
+    if (turn && cumulative && !increment) turn.costPartial = true;
+    if (increment?.totalTokens > 0 && turn && Number.isFinite(eventAt) &&
+        (!Number.isFinite(turn.startedAt) || eventAt >= turn.startedAt) &&
+        (!Number.isFinite(turn.completedAt) || eventAt <= turn.completedAt + 5000)) {
+      const context = state.currentContext?.turnId === turn.turnId ? state.currentContext : turn;
+      const credits = usageCredits(increment, context.model, context.serviceTier);
+      turn.tokenUsage = addUsage(turn.tokenUsage, increment);
+      turn.costCredits = (turn.costCredits || 0) + (credits || 0);
+      turn.costTokens = (turn.costTokens || 0) + (credits === null ? 0 : increment.totalTokens);
+      turn.costPartial ||= credits === null;
+      turn.costRateVersion = COST_RATE_VERSION;
+      turn.usageFirstAt ??= eventAt;
+      turn.usageLastAt = eventAt;
+      turn.usageSamples = (turn.usageSamples || 0) + 1;
+      if (credits !== null) {
+        state.usageCredits += credits;
+        state.costTokens += increment.totalTokens;
+      }
+    }
     if (total !== null) state.tokens = total;
     if (delta !== null) state.tokenDelta = delta;
     state.lastTokenAt = eventAt;
@@ -423,6 +468,11 @@ function readLegacyRollout(file, diagnostics, { stat, previous, maxBytes = MAX_R
     turns: new Map((previous?.lifecycleTurns || []).map((turn) => [turn.turnId || "__rollout_latest__", turn])),
     latestKey: previous?.latestTurn?.turnId || null,
     tokens: previous?.tokens ?? null,
+    lastTokenUsage: previous?.lastTokenUsage ?? null,
+    currentContext: previous?.currentContext ?? null,
+    usageCredits: previous?.usageCredits ?? 0,
+    usageEpoch: previous?.usageEpoch ?? randomUUID(),
+    costTokens: previous?.costTokens ?? 0,
     tokenDelta: previous?.tokenDelta ?? null,
     lastTokenAt: previous?.tokenUpdatedAt ?? null,
     eventCount: 0,
@@ -503,6 +553,11 @@ function readLegacyRollout(file, diagnostics, { stat, previous, maxBytes = MAX_R
       .reduce((max, value) => Math.max(max, value), 0) || null;
   return {
     tokens: state.tokens,
+    lastTokenUsage: state.lastTokenUsage,
+    currentContext: state.currentContext,
+    usageCredits: state.usageCredits,
+    usageEpoch: state.usageEpoch,
+    costTokens: state.costTokens,
     tokenDelta: state.tokenDelta,
     tokenUpdatedAt: state.lastTokenAt,
     readOffset: state.readOffset,
@@ -516,6 +571,14 @@ function readLegacyRollout(file, diagnostics, { stat, previous, maxBytes = MAX_R
         completedAt: turn.completedAt,
         durationMs: turn.durationMs ?? null,
         status: statusClass(turn.status),
+        model: turn.model || null,
+        reasoningEffort: turn.reasoningEffort || null,
+        serviceTier: turn.serviceTier || null,
+        tokenUsage: turn.tokenUsage || null,
+        costCredits: turn.costTokens > 0 ? turn.costCredits : null,
+        costTokens: turn.costTokens || 0,
+        costRateVersion: turn.costRateVersion || null,
+        costCoverage: turn.usageStartSeen && !turn.costPartial ? "recorded-turn" : "partial-turn",
       })),
       intervals: lifecycleTurns
         .filter((turn) => statusClass(turn.status) === "idle")
@@ -628,7 +691,13 @@ function mergeExecutionHistory(projected, rollout) {
   for (const candidate of rollout.turns || []) {
     const key = candidate.turnId || `at:${candidate.startedAt}`;
     const current = turns.get(key);
-    const selected = newerLifecycle(current, candidate);
+    const lifecycle = newerLifecycle(current, candidate);
+    const selected = candidate.costCredits > 0 ? { ...lifecycle,
+      model: candidate.model, reasoningEffort: candidate.reasoningEffort,
+      serviceTier: candidate.serviceTier, tokenUsage: candidate.tokenUsage,
+      costCredits: candidate.costCredits, costTokens: candidate.costTokens,
+      costRateVersion: candidate.costRateVersion, costCoverage: candidate.costCoverage,
+    } : lifecycle;
     if (selected !== current) {
       turns.set(key, selected);
       changed = true;
@@ -1083,6 +1152,9 @@ export class LocalReader {
           ? latestTurnFromRow(latestTurns.get(id))
           : null;
         let tokenDelta = null;
+        let creditUsage = null;
+        let costEpoch = null;
+        let costTokens = null;
         let tokens = rowTokens(row.tokens_used);
         let tokensKnown = finiteNumber(row.tokens_used) !== null && finiteNumber(row.tokens_used) >= 0;
         let updatedAt = rowTimestamp(row) ?? now;
@@ -1113,6 +1185,9 @@ export class LocalReader {
             bootstrap: projectedActivity.status === "idle" && updatedAt > lifecycleAt + 60_000,
           });
           if (legacy) {
+            creditUsage = legacy.usageCredits;
+            costEpoch = legacy.usageEpoch;
+            costTokens = legacy.costTokens;
             const selectedTurn = newerLifecycle(latestTurn, legacy.latestTurn);
             if (selectedTurn !== latestTurn) {
               latestTurn = selectedTurn;
@@ -1154,6 +1229,10 @@ export class LocalReader {
           updatedAt,
           tokens,
           tokensKnown,
+          usageCredits: creditUsage,
+          costEpoch,
+          costTokens,
+          costRateVersion: creditUsage !== null ? COST_RATE_VERSION : null,
           activityEvidence: activityEvidence({
             source: activitySource,
             latestTurn,

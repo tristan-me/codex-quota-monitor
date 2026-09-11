@@ -996,3 +996,38 @@ test("all-known discovery includes more than 200 tasks and history older than 16
   assert.equal(result.diagnostics.truncated, false);
   assert.equal(result.diagnostics.ok, true);
 });
+
+test('recorded token cost respects each turn model and skips repeated counters across polls and turns',async(t)=>{
+  const home=await makeHome();t.after(()=>fs.rm(home,{recursive:true,force:true}));
+  const now=1_800_000_000_000;
+  const file=path.join(home,'cost-rollout.jsonl');
+  const event=(at,type,payload)=>JSON.stringify({timestamp:new Date(at).toISOString(),type,payload})+'\n';
+  const usage=(input,cached,output)=>({input_tokens:input,cached_input_tokens:cached,output_tokens:output,
+    reasoning_output_tokens:output,total_tokens:input+output});
+  const first=usage(1000,900,100), second=usage(2000,1800,200);
+  const count=(at,total,last)=>event(at,'event_msg',{type:'token_count',info:{total_token_usage:total,last_token_usage:last}});
+  await fs.writeFile(file,
+    event(now-20000,'event_msg',{type:'task_started',turn_id:'astra-turn'})+
+    event(now-19500,'turn_context',{turn_id:'astra-turn',model:'gpt-6-astra',effort:'max',developer_instructions:'DO-NOT-RETAIN-PRIVATE-CONTENT'})+
+    count(now-19000,first,first)+count(now-18500,first,first)+
+    event(now-15000,'event_msg',{type:'task_complete',turn_id:'astra-turn'})+
+    event(now-10000,'event_msg',{type:'task_started',turn_id:'luna-turn'})+
+    event(now-9500,'turn_context',{turn_id:'luna-turn',model:'gpt-5.6-luna',effort:'max'})+
+    count(now-9000,first,first)+count(now-8000,second,first));
+  makeStateDb(home,[{id:'cost-task',name:'Cost task',model:'gpt-5.6-luna',tokens_used:2200,
+    updated_at_ms:now,rollout_path:file,history_mode:'paginated'}]);makeHistoryDb(home,[]);
+  const reader=new LocalReader({codexHome:home,now});
+  const row=reader.read({includeAllKnown:true}).threads[0];
+  const astra=row.executionHistory.turns.find(t=>t.turnId==='astra-turn');
+  const luna=row.executionHistory.turns.find(t=>t.turnId==='luna-turn');
+  assert.ok(Math.abs(astra.costCredits-0.1725)<1e-10);
+  assert.ok(Math.abs(luna.costCredits-0.00395)<1e-10);
+  assert.equal(astra.tokenUsage.outputTokens,100);
+  assert.equal(luna.costTokens,1100);
+  assert.doesNotMatch(JSON.stringify(row),/DO-NOT-RETAIN-PRIVATE-CONTENT/);
+  const unchanged=reader.read({includeAllKnown:true}).threads[0];
+  assert.equal(unchanged.usageCredits,row.usageCredits);
+  await fs.appendFile(file,count(now-1000,usage(3000,2700,300),first));
+  const appended=reader.read({includeAllKnown:true}).threads[0];
+  assert.ok(Math.abs(appended.usageCredits-row.usageCredits-0.00395)<1e-10);
+});

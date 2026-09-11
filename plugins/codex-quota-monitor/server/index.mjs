@@ -5,7 +5,7 @@ const tools = [
   {
     name: "open_quota_monitor",
     description:
-      "Open the local Codex quota monitor. Per-session quota is explicitly estimated. The result.url is the exact local URL: use that exact value with open_in_codex when available, and always include it unchanged as a clickable Markdown link in the final reply, even when the side panel opens. A stopped service is not started by a bookmark, and this tool does not open the native ChatGPT desktop window. Does not wait for upstream quota reads.",
+      "Open the local Codex quota monitor. Per-session quota is explicitly estimated. The result.url is the exact local URL: use that exact value with open_in_codex when available, and always include it unchanged as a clickable Markdown link in the final reply, even when the side panel opens. A stopped service is not started by a bookmark, and this tool does not open the native ChatGPT desktop window. Verifies page assets before returning. Use compact only when requested, and check the rendered dashboard when browser tools are available. Does not wait for upstream quota reads.",
     inputSchema: {
       type: "object",
       properties: { compact: { type: "boolean" } },
