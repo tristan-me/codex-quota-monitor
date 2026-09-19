@@ -1,4 +1,8 @@
-import { formatTaskPercent, resetDeadline } from './dashboard-utils.mjs';
+import {
+  formatTaskPercent, resetDeadline, orderSessionRows, filterSessionRows,
+  moveSessionGroup, sessionSortPreference, sessionSortStorageKey,
+} from './dashboard-utils.mjs';
+import { createSessionChart, renderQuotaTrend, renderAttributionScopes } from './usage-charts.mjs';
 (() => {
   'use strict';
 
@@ -7,7 +11,6 @@ import { formatTaskPercent, resetDeadline } from './dashboard-utils.mjs';
   const DISCLAIMER_KEY = 'codexQuotaMonitor.disclaimerDismissed';
   const OBJECTIVES = new Set(['economy', 'balanced', 'quality']);
   const EFFORT_ORDER = ['ultra', 'max', 'xhigh', 'high', 'medium', 'low'];
-  const SVG_NS = 'http://www.w3.org/2000/svg';
 
   const state = {
     snapshot: null,
@@ -32,6 +35,12 @@ import { formatTaskPercent, resetDeadline } from './dashboard-utils.mjs';
     sessionQuery: '',
     sessionPage: 0,
     sessionPageSize: 5,
+    sessionSortProviderId: null,
+    sessionSort: 'time-desc',
+    sessionManualOrder: [],
+    sessionPreferences: new Map(),
+    sessionRows: [],
+    sessionDrag: null,
     expandedSessionIds: new Set(),
     sessionAutoCollapsedIds: new Set(),
     modelPage: 0,
@@ -319,7 +328,7 @@ import { formatTaskPercent, resetDeadline } from './dashboard-utils.mjs';
         select.dataset.providers = signature;
       }
       select.value = state.pendingProviderId || selection.selected.id;
-      select.disabled = !selection.available || state.offline || state.providerSaving;
+      select.disabled = !selection.available || state.offline || state.providerSaving || Boolean(state.sessionDrag);
       select.setAttribute('aria-busy', state.providerSaving ? 'true' : 'false');
     }
     setText('selectedProviderBadge', `正在查看：${selection.selected.name}`);
@@ -743,32 +752,236 @@ import { formatTaskPercent, resetDeadline } from './dashboard-utils.mjs';
 
   function sessionTotals(session) {
     return {
-      totalElapsedSeconds: sessionMetric(session, 'totalElapsedSeconds', 'observationSeconds'),
       totalEstimatedPercent: sessionMetric(session, 'totalEstimatedPercent', 'estimatedPercent', true),
       averageSecondsPerPercent: sessionMetric(session, 'averageSecondsPerPercent', 'averageSecondsPerPercent'),
-      latestTurnElapsedSeconds: sessionMetric(session, 'latestTurnElapsedSeconds', Object.prototype.hasOwnProperty.call(session, 'ownLatestTurnElapsedSeconds') ? 'ownLatestTurnElapsedSeconds' : 'elapsedSeconds'),
-      latestTurnEstimatedPercent: Object.prototype.hasOwnProperty.call(session, 'latestTurnEstimatedPercent')
-        ? finiteNumber(session.latestTurnEstimatedPercent)
-        : finiteNumber(session.ownLatestTurnEstimatedPercent),
-      secondsPerPercent: sessionMetric(session, 'latestTurnSecondsPerPercent', Object.prototype.hasOwnProperty.call(session, 'ownLatestTurnSecondsPerPercent') ? 'ownLatestTurnSecondsPerPercent' : 'secondsPerPercent'),
     };
   }
 
-  function latestTurnScopeText(session) {
-    const count = finiteNumber(session.latestTurnChildCount);
-    if (count === null) return '最近一次的子任务归属待确认。';
-    if (count <= 0) return '最近一次仅含本任务本轮。';
-    return `最近一次含本轮启动的 ${Math.round(count)} 个子任务。`;
+  function syncSessionSort(snapshot) {
+    const providerId = providerSelectionFrom(snapshot).selected.id;
+    if (state.sessionSortProviderId !== providerId) {
+      let preference = state.sessionPreferences.get(providerId);
+      if (!preference) {
+        try {
+          preference = sessionSortPreference(JSON.parse(window.localStorage.getItem(sessionSortStorageKey(providerId))));
+        } catch (_error) {
+          preference = sessionSortPreference(null);
+        }
+        state.sessionPreferences.set(providerId, preference);
+      }
+      state.sessionSortProviderId = providerId;
+      state.sessionSort = preference.sort;
+      state.sessionManualOrder = preference.order;
+      state.sessionPage = 0;
+    }
+    const select = $('sessionSort');
+    if (select) {
+      select.value = state.sessionSort;
+      select.disabled = Boolean(state.sessionDrag) || state.providerSaving;
+    }
   }
 
-  function sessionFilterEntries(sessions, tokens) {
-    return sessions.map((root) => {
-      const children = Array.isArray(root.children) ? root.children.filter((child) => isRecord(child)) : [];
-      const rootMatches = sessionMatches(root, tokens);
-      const matchingChildren = tokens.length ? children.filter((child) => sessionMatches(child, tokens)) : [];
-      if (tokens.length && !rootMatches && matchingChildren.length === 0) return null;
-      return { root, children, rootMatches, matchingChildren };
-    }).filter(Boolean);
+  function saveSessionSort() {
+    const preference = sessionSortPreference({ sort: state.sessionSort, order: state.sessionManualOrder });
+    const providerId = state.sessionSortProviderId;
+    if (!providerId) return;
+    state.sessionPreferences.set(providerId, preference);
+    try {
+      window.localStorage.setItem(sessionSortStorageKey(providerId), JSON.stringify(preference));
+    } catch (_error) {
+      // The in-memory preference still survives polling and provider switches.
+    }
+  }
+
+  function sortedSessionRows(sessions, providerKind) {
+    state.sessionRows = orderSessionRows(sessions, {
+      sort: state.sessionSort,
+      providerKind,
+      manualOrder: state.sessionManualOrder,
+    });
+    return state.sessionRows;
+  }
+
+  function groupSessionRows(rows) {
+    const groups = [];
+    rows.forEach(entry => {
+      if (entry.depth === 0) groups.push({ root: entry, children: [] });
+      else groups.at(-1)?.children.push(entry);
+    });
+    return groups;
+  }
+
+  function clearSessionDropMarker() {
+    $('sessionList')?.querySelectorAll('.is-drop-before, .is-drop-after').forEach(row => {
+      row.classList.remove('is-drop-before', 'is-drop-after');
+    });
+  }
+
+  function finishSessionDrag() {
+    const drag = state.sessionDrag;
+    if (!drag) return;
+    const restoreFocus = document.activeElement === drag.handle;
+    state.sessionDrag = null;
+    if (drag.handle?.hasPointerCapture(drag.pointerId)) drag.handle.releasePointerCapture(drag.pointerId);
+    clearSessionDropMarker();
+    $('sessionList')?.querySelectorAll('.is-dragging').forEach(row => row.classList.remove('is-dragging'));
+    document.body.classList.remove('session-drag-active');
+    // Release pointer capture before applying the newest polled snapshot.
+    window.requestAnimationFrame(() => {
+      render(state.snapshot || {});
+      if (restoreFocus) [...($('sessionList')?.querySelectorAll('[data-session-id]') || [])]
+        .find(row => row.dataset.sessionId === drag.sourceId)?.querySelector('.session-drag-handle')?.focus({ preventScroll: true });
+    });
+  }
+
+  function applyManualSessionOrder(result) {
+    if (!result) return;
+    state.sessionSort = 'manual';
+    state.sessionManualOrder = result.order;
+    saveSessionSort();
+  }
+
+  function sessionDropResult(row, event) {
+    const drag = state.sessionDrag;
+    if (!drag || providerSelectionFrom(state.snapshot).selected.id !== drag.providerId) return null;
+    const bounds = row.getBoundingClientRect();
+    const placement = event.clientY < bounds.top + bounds.height / 2 ? 'before' : 'after';
+    const targetId = row.dataset.sessionId;
+    if (drag.hoveredId !== targetId || drag.placement !== placement) {
+      drag.hoveredId = targetId;
+      drag.placement = placement;
+      drag.result = moveSessionGroup(drag.rows, drag.sourceId, targetId, placement);
+      clearSessionDropMarker();
+      if (drag.result) {
+        const targetRow = [...$('sessionList').querySelectorAll('[data-session-id]')]
+          .find(candidate => candidate.dataset.sessionId === drag.result.targetId);
+        targetRow?.classList.add(`is-drop-${placement}`);
+      }
+    }
+    return drag.result;
+  }
+
+  function pointerSessionDropResult(event) {
+    const target = document.elementFromPoint(event.clientX, event.clientY)?.closest('[data-session-id]');
+    if (target && $('sessionList')?.contains(target)) return sessionDropResult(target, event);
+    if (state.sessionDrag) {
+      state.sessionDrag.hoveredId = null;
+      state.sessionDrag.result = null;
+    }
+    clearSessionDropMarker();
+    return null;
+  }
+
+  function bindSessionRowDrag(row, header, entry) {
+    row.dataset.sessionDepth = String(entry.depth);
+    row.style.setProperty('--session-depth', String(entry.depth));
+    if (!entry.id) return;
+    row.dataset.sessionId = entry.id;
+    if (entry.parentId) row.dataset.sessionParentId = entry.parentId;
+    const handle = textElement('button', 'session-drag-handle', '⠿');
+    handle.type = 'button';
+    handle.draggable = false;
+    handle.style.touchAction = 'none';
+    handle.disabled = state.providerSaving;
+    handle.title = '拖动排序，或按 Alt + ↑ / ↓；父任务始终在子任务前';
+    handle.setAttribute('aria-label', `调整顺序：${safeText(entry.session.title, entry.id)}`);
+    header.prepend(handle);
+    handle.addEventListener('pointerdown', event => {
+      if (state.providerSaving || state.sessionDrag || event.button !== 0 || event.isPrimary === false) return;
+      event.preventDefault();
+      handle.focus({ preventScroll: true });
+      state.sessionDrag = {
+        sourceId: entry.id,
+        providerId: state.sessionSortProviderId,
+        rows: state.sessionRows.slice(),
+        handle,
+        pointerId: event.pointerId,
+        startX: event.clientX,
+        startY: event.clientY,
+        active: false,
+        result: null,
+      };
+      handle.setPointerCapture(event.pointerId);
+      if ($('sessionSort')) $('sessionSort').disabled = true;
+      if ($('providerSelect')) $('providerSelect').disabled = true;
+    });
+    handle.addEventListener('pointermove', event => {
+      const drag = state.sessionDrag;
+      if (drag?.handle !== handle || drag.pointerId !== event.pointerId) return;
+      if (!drag.active) {
+        if (Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) < 6) return;
+        drag.active = true;
+        row.classList.add('is-dragging');
+        document.body.classList.add('session-drag-active');
+      }
+      event.preventDefault();
+      pointerSessionDropResult(event);
+    });
+    handle.addEventListener('pointerup', event => {
+      const drag = state.sessionDrag;
+      if (drag?.handle !== handle || drag.pointerId !== event.pointerId) return;
+      event.preventDefault();
+      if (drag.active) applyManualSessionOrder(pointerSessionDropResult(event));
+      finishSessionDrag();
+    });
+    const cancelPointerDrag = event => {
+      if (state.sessionDrag?.handle === handle && state.sessionDrag.pointerId === event.pointerId) finishSessionDrag();
+    };
+    handle.addEventListener('pointercancel', cancelPointerDrag);
+    handle.addEventListener('lostpointercapture', cancelPointerDrag);
+    handle.addEventListener('keydown', event => {
+      if (event.key === 'Escape' && state.sessionDrag?.handle === handle) {
+        event.preventDefault();
+        finishSessionDrag();
+        return;
+      }
+      if (!event.altKey || !['ArrowUp', 'ArrowDown'].includes(event.key) || state.sessionDrag || state.providerSaving) return;
+      event.preventDefault();
+      const siblings = state.sessionRows.filter(candidate => candidate.parentId === entry.parentId && candidate.depth === entry.depth);
+      const index = siblings.findIndex(candidate => candidate.id === entry.id);
+      const up = event.key === 'ArrowUp';
+      const target = siblings[index + (up ? -1 : 1)];
+      if (!target) return;
+      applyManualSessionOrder(moveSessionGroup(state.sessionRows, entry.id, target.id, up ? 'before' : 'after'));
+      renderSessionList(state.snapshot || {});
+      [...$('sessionList').querySelectorAll('[data-session-id]')]
+        .find(candidate => candidate.dataset.sessionId === entry.id)?.querySelector('.session-drag-handle')?.focus();
+    });
+  }
+
+  function appendSessionChart(row, entry, snapshot) {
+    const chart = createSessionChart(snapshot.sessionCharts?.[entry.id], {
+      id: entry.id, formatPercent: formatTaskPercent, formatDuration,
+    });
+    if (chart) row.append(chart);
+  }
+
+  function createCodexSessionRow(entry, snapshot, index) {
+    const session = entry.session;
+    const row = textElement('article', `session-row${entry.depth ? ' session-row-child' : ''}`, '');
+    row.setAttribute('role', 'listitem');
+    const header = textElement('div', 'session-row-header', '');
+    const titleBlock = textElement('div', 'session-title-block', '');
+    const titleValue = safeText(session.title, `未命名${entry.depth ? '子' : ''}会话 ${index + 1}`);
+    const title = textElement('h3', 'session-title', titleValue);
+    title.title = titleValue;
+    const idElement = textElement('span', 'session-id', entry.id || '—');
+    idElement.title = idElement.textContent;
+    titleBlock.append(title, idElement);
+    header.append(titleBlock, textElement('span', `status-chip ${statusClass(session.status)}`, statusLabel(session.status)));
+    bindSessionRowDrag(row, header, entry);
+    row.append(header);
+    const meta = textElement('div', 'session-meta', '');
+    const model = textElement('span', 'meta-item meta-title', safeText(session.model, '—'));
+    model.title = model.textContent;
+    meta.append(model, textElement('span', 'meta-separator', '·'), textElement('span', 'meta-item', safeText(session.reasoningEffort, '—')));
+    const childCount = finiteNumber(session.childCount);
+    if (childCount > 0) meta.append(textElement('span', 'meta-separator', '·'), textElement('span', 'meta-item', `子会话 ${Math.round(childCount)} 个`));
+    row.append(meta);
+    const metrics = sessionTotals(session);
+    row.append(textElement('div', 'session-stat-line', `总消耗额度${formatTaskPercent(metrics.totalEstimatedPercent)}，平均每1%耗时${formatDuration(metrics.averageSecondsPerPercent, '待估算')}`));
+    appendSessionChart(row, entry, snapshot);
+    return row;
   }
 
   function renderSessionPagination(filteredCount, totalCount, noun = '根会话') {
@@ -792,6 +1005,9 @@ import { formatTaskPercent, resetDeadline } from './dashboard-utils.mjs';
   }
 
   function renderSessionList(snapshot) {
+    // Keep the captured handle attached while polling continues during a drag.
+    if (state.sessionDrag) return;
+    syncSessionSort(snapshot);
     if (isApiProvider(snapshot)) {
       renderApiSessionList(snapshot);
       return;
@@ -805,114 +1021,36 @@ import { formatTaskPercent, resetDeadline } from './dashboard-utils.mjs';
     setText('sessionSummaryText', summaryStatus(snapshot), '等待会话样本');
     const settings = getSettings(snapshot);
     setText('sessionRefreshHint', `全部已知任务 · 每 ${settings.pollSeconds} 秒更新`, '全部已知任务 · 每 5 秒更新');
-    if (!sessions) {
-      list.append(textElement('div', 'empty-state', '等待本地会话快照'));
-      renderSessionPagination(0, 0);
-      return;
-    }
-    if (sessions.length === 0) {
-      list.append(textElement('div', 'empty-state', '当前没有可显示会话'));
+    const ordered = sortedSessionRows(sessions || [], 'codex');
+    if (!sessions || sessions.length === 0) {
+      list.append(textElement('div', 'empty-state', sessions ? '当前没有可显示会话' : '等待本地会话快照'));
       renderSessionPagination(0, 0);
       return;
     }
     const tokens = sessionQueryTokens(state.sessionQuery);
-    const entries = sessionFilterEntries(sessions, tokens);
-    renderSessionPagination(entries.length, sessions.length);
-    if (entries.length === 0) {
+    const groups = groupSessionRows(ordered);
+    const allById = new Map(groups.map(group => [group.root.rootId, group]));
+    const filtered = groupSessionRows(tokens.length ? filterSessionRows(ordered, session => sessionMatches(session, tokens)) : ordered);
+    renderSessionPagination(filtered.length, groups.length);
+    if (!filtered.length) {
       list.append(textElement('div', 'empty-state', '没有匹配的会话 · 可清除搜索条件'));
       return;
     }
     const start = state.sessionPage * state.sessionPageSize;
-    entries.slice(start, start + state.sessionPageSize).forEach((entry, index) => {
-      const session = entry.root;
-      const row = document.createElement('article');
-      row.className = 'session-row';
-      row.setAttribute('role', 'listitem');
-
-      const header = document.createElement('div');
-      header.className = 'session-row-header';
-      const titleBlock = document.createElement('div');
-      titleBlock.className = 'session-title-block';
-      const titleValue = safeText(session.title, `未命名会话 ${start + index + 1}`);
-      const title = textElement('h3', 'session-title', titleValue);
-      title.title = titleValue;
-      titleBlock.append(title);
-      const identity = safeText(session.id, '—');
-      const idElement = textElement('span', 'session-id', identity);
-      idElement.title = identity;
-      titleBlock.append(idElement);
-      header.append(titleBlock);
-      const status = textElement('span', `status-chip ${statusClass(session.status)}`, statusLabel(session.status));
-      header.append(status);
-      row.append(header);
-
-      const meta = document.createElement('div');
-      meta.className = 'session-meta';
-      const model = safeText(session.model, '—');
-      const effort = safeText(session.reasoningEffort, '—');
-      const modelElement = textElement('span', 'meta-item meta-title', model);
-      modelElement.title = model;
-      meta.append(modelElement);
-      meta.append(textElement('span', 'meta-separator', '·'));
-      meta.append(textElement('span', 'meta-item', effort));
-      const childCount = finiteNumber(session.childCount);
-      if (childCount !== null) {
-        meta.append(textElement('span', 'meta-separator', '·'));
-        meta.append(textElement('span', 'meta-item', `子会话 ${Math.max(0, Math.round(childCount))} 个`));
-      }
-      row.append(meta);
-
-      const children = Array.isArray(session.children) ? session.children.filter((child) => isRecord(child)) : [];
-      const metrics = sessionTotals(session);
-      const statLine = document.createElement('div');
-      statLine.className = 'session-stat-line';
-      const totalLine = `已知任务总耗时${formatDuration(metrics.totalElapsedSeconds, '暂无记录')}，已知消耗额度${formatTaskPercent(metrics.totalEstimatedPercent)}，平均每 1% 耗时 ${formatDuration(metrics.averageSecondsPerPercent, '待估算')}；`;
-      const latestLine = `最近一次会话耗时${formatDuration(metrics.latestTurnElapsedSeconds, '暂无记录')}，最近一次会话消耗额度${formatTaskPercent(metrics.latestTurnEstimatedPercent)}，预计接下来每 1% 额度能撑 ${formatDuration(metrics.secondsPerPercent, '待估算')}`;
-      statLine.append(textElement('span', 'session-stat-line-block', totalLine));
-      statLine.append(textElement('span', 'session-stat-line-block', latestLine));
-      row.append(statLine);
-
-      if (Array.isArray(session.historicalModels) && session.historicalModels.length > 1)
-        row.append(textElement('p', 'session-scope-note', `历史总额包含 ${session.historicalModels.join('、')}；上方显示的是当前模型。`));
-      if (session.estimateUsesModelCosts) {
-        row.append(textElement('p', 'session-scope-note', session.estimateIncludesLegacy
-          ? '按各轮模型、缓存输入和输出用量校准估算；总额仍含无法重新校准的旧版记录。'
-          : '按各轮模型、缓存输入和输出用量校准估算；不是官方逐任务账单。'));
-      }
-      if (session.latestTurnRateSource === 'history-average-fallback')
-        row.append(textElement('p', 'session-scope-note', '本轮样本不足，接下来耗时参考已知任务均速。'));
-      if (session.estimateIncludesRecovery === true || session.ownEstimateIncludesRecovery === true) {
-        row.append(textElement('p', 'session-scope-note', session.latestTurnEstimateIncludesRecovery === true
-          ? '最近一轮的部分额度由已记录的 token 用量校准补估。'
-          : '任务总额包含历史单轮的 token 用量校准补估。'));
-      }
-
-      if (children.length > 0) {
-        const ownQuota = finiteNumber(session.ownEstimatedPercent);
-        const childQuotas = children.map((child) => {
-          const own = finiteNumber(child.ownEstimatedPercent);
-          return own !== null ? own : sessionMetric(child, 'totalEstimatedPercent', 'estimatedPercent');
-        });
-        const knownChildQuotas = childQuotas.filter(value => value !== null);
-        const childQuota = knownChildQuotas.reduce((sum, value) => sum + value, 0);
-        const childText = knownChildQuotas.length
-          ? `${formatTaskPercent(childQuota)}${knownChildQuotas.length < children.length ? '（部分样本）' : ''}`
-          : '等待采样';
-        row.append(textElement('p', 'session-scope-note', `总额度拆分：本任务累计 ${ownQuota === null ? '等待采样' : formatTaskPercent(ownQuota)}，子任务合计 ${childText}。并行耗时不重复累加；${latestTurnScopeText(session)}`));
-        const key = safeText(session.id, session.title || `root-${start + index}`);
-        const matchingChildren = tokens.length ? children.filter((child) => sessionMatches(child, tokens)) : [];
-        const childSearchMatch = tokens.length > 0 && matchingChildren.length > 0;
-        const restrictToMatches = childSearchMatch && !sessionMatches(session, tokens);
-        const manuallyCollapsed = state.sessionAutoCollapsedIds.has(key);
-        const expanded = state.expandedSessionIds.has(key) || (childSearchMatch && !manuallyCollapsed);
-        const shownChildren = expanded ? (restrictToMatches ? matchingChildren : children) : [];
-        const toggle = document.createElement('button');
-        toggle.className = 'session-child-toggle button button-small button-quiet';
+    filtered.slice(start, start + state.sessionPageSize).forEach((group, index) => {
+      const row = createCodexSessionRow(group.root, snapshot, start + index);
+      const children = allById.get(group.root.rootId).children;
+      if (children.length) {
+        const key = group.root.id || group.root.rootId;
+        const matchingChildren = tokens.length ? children.filter(child => sessionMatches(child.session, tokens)) : [];
+        const childSearchMatch = matchingChildren.length > 0;
+        const restrictToMatches = childSearchMatch && !sessionMatches(group.root.session, tokens);
+        const expanded = state.expandedSessionIds.has(key) || (childSearchMatch && !state.sessionAutoCollapsedIds.has(key));
+        const toggle = textElement('button', 'session-child-toggle button button-small button-quiet', expanded
+          ? (restrictToMatches ? '收起匹配子会话' : '收起子会话')
+          : (matchingChildren.length ? `显示匹配子会话（${matchingChildren.length}）` : `展开子会话（${children.length}）`));
         toggle.type = 'button';
         toggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
-        toggle.textContent = expanded
-          ? (restrictToMatches ? '收起匹配子会话' : '收起子会话')
-          : (matchingChildren.length ? `显示匹配子会话（${matchingChildren.length}）` : `展开子会话（${children.length}）`);
         toggle.addEventListener('click', () => {
           if (expanded) {
             state.expandedSessionIds.delete(key);
@@ -924,50 +1062,10 @@ import { formatTaskPercent, resetDeadline } from './dashboard-utils.mjs';
           renderSessionList(state.snapshot || {});
         });
         row.append(toggle);
-        if (shownChildren.length > 0) {
-          const childList = document.createElement('div');
-          childList.className = 'session-child-list';
+        if (expanded) {
+          const childList = textElement('div', 'session-child-list', '');
           childList.setAttribute('role', 'list');
-          shownChildren.forEach((child, childIndex) => {
-            const childRow = document.createElement('article');
-            childRow.className = 'session-row session-row-child';
-            childRow.setAttribute('role', 'listitem');
-            const childTitle = safeText(child.title, `未命名子会话 ${childIndex + 1}`);
-            const childHeader = document.createElement('div');
-            childHeader.className = 'session-row-header';
-            const childTitleBlock = document.createElement('div');
-            childTitleBlock.className = 'session-title-block';
-            const childTitleElement = textElement('h3', 'session-title', childTitle);
-            childTitleElement.title = childTitle;
-            childTitleBlock.append(childTitleElement);
-            const childId = safeText(child.id, '—');
-            const childIdElement = textElement('span', 'session-id', childId);
-            childIdElement.title = childId;
-            childTitleBlock.append(childIdElement);
-            childHeader.append(childTitleBlock);
-            childHeader.append(textElement('span', `status-chip ${statusClass(child.status)}`, statusLabel(child.status)));
-            childRow.append(childHeader);
-            const childMeta = document.createElement('div');
-            childMeta.className = 'session-meta';
-            const childModel = safeText(child.model, '—');
-            const childModelElement = textElement('span', 'meta-item meta-title', childModel);
-            childModelElement.title = childModel;
-            childMeta.append(childModelElement);
-            childMeta.append(textElement('span', 'meta-separator', '·'));
-            childMeta.append(textElement('span', 'meta-item', safeText(child.reasoningEffort, '—')));
-            childRow.append(childMeta);
-            const childMetrics = sessionTotals(child);
-            const childLine = document.createElement('div');
-            childLine.className = 'session-stat-line';
-            childLine.append(textElement('span', 'session-stat-line-block', `已知任务总耗时${formatDuration(childMetrics.totalElapsedSeconds, '暂无记录')}，已知消耗额度${formatTaskPercent(childMetrics.totalEstimatedPercent)}，平均每 1% 耗时 ${formatDuration(childMetrics.averageSecondsPerPercent, '待估算')}；`));
-            childLine.append(textElement('span', 'session-stat-line-block', `最近一次会话耗时${formatDuration(childMetrics.latestTurnElapsedSeconds, '暂无记录')}，最近一次会话消耗额度${formatTaskPercent(childMetrics.latestTurnEstimatedPercent)}，预计接下来每 1% 额度能撑 ${formatDuration(childMetrics.secondsPerPercent, '待估算')}`));
-            childRow.append(childLine);
-            const latestChildCount = finiteNumber(child.latestTurnChildCount);
-            if (latestChildCount !== null && latestChildCount > 0) {
-              childRow.append(textElement('p', 'session-scope-note', `最近一次含本轮启动的 ${Math.round(latestChildCount)} 个子任务。`));
-            }
-            childList.append(childRow);
-          });
+          group.children.forEach((child, childIndex) => childList.append(createCodexSessionRow(child, snapshot, childIndex)));
           row.append(childList);
         }
       }
@@ -985,23 +1083,27 @@ import { formatTaskPercent, resetDeadline } from './dashboard-utils.mjs';
     if (search && document.activeElement !== search) search.value = state.sessionQuery;
     setText('sessionSummaryText', summaryStatus(snapshot));
     setText('sessionRefreshHint', `已知任务记录 · 每 ${getSettings(snapshot).pollSeconds} 秒更新`);
-    if (!sessions || sessions.length === 0) {
+    const ordered = sortedSessionRows(sessions || [], provider.kind);
+    if (!sessions || !sessions.length) {
       list.append(textElement('div', 'empty-state', sessions
         ? `尚无 ${provider.name} 的可读任务用量记录`
         : `等待 ${provider.name} 的本地任务快照`));
-      renderSessionPagination(0, 0, '任务');
+      renderSessionPagination(0, 0, '任务组');
       return;
     }
     const query = sessionQueryTokens(state.sessionQuery);
-    const filtered = query.length ? sessions.filter((session) => sessionMatches(session, query)) : sessions;
-    renderSessionPagination(filtered.length, sessions.length, '任务');
+    const groups = groupSessionRows(ordered);
+    const filtered = groupSessionRows(query.length ? filterSessionRows(ordered, session => sessionMatches(session, query)) : ordered);
+    renderSessionPagination(filtered.length, groups.length, '任务组');
     if (!filtered.length) {
       list.append(textElement('div', 'empty-state', '没有匹配的任务 · 可清除搜索条件'));
       return;
     }
     const start = state.sessionPage * state.sessionPageSize;
-    filtered.slice(start, start + state.sessionPageSize).forEach((session, index) => {
-      const row = textElement('article', 'session-row api-task-row', '');
+    const pageRows = filtered.slice(start, start + state.sessionPageSize).flatMap(group => [group.root, ...group.children]);
+    pageRows.forEach((entry, index) => {
+      const session = entry.session;
+      const row = textElement('article', `session-row api-task-row${entry.depth ? ' session-row-child' : ''}`, '');
       row.setAttribute('role', 'listitem');
       const header = textElement('div', 'session-row-header', '');
       const titleBlock = textElement('div', 'session-title-block', '');
@@ -1011,6 +1113,7 @@ import { formatTaskPercent, resetDeadline } from './dashboard-utils.mjs';
       id.title = id.textContent;
       titleBlock.append(title, id);
       header.append(titleBlock, textElement('span', `status-chip ${statusClass(session.status)}`, statusLabel(session.status)));
+      bindSessionRowDrag(row, header, entry);
       row.append(header);
 
       const meta = textElement('div', 'session-meta', '');
@@ -1047,47 +1150,13 @@ import { formatTaskPercent, resetDeadline } from './dashboard-utils.mjs';
       if (!hasUsage || session.partial === true) row.append(textElement('p', 'session-scope-note api-task-partial', hasUsage
         ? '记录不完整，以上用量为已知下限。'
         : '尚无可读用量记录；“—”不代表零消耗。'));
+      appendSessionChart(row, entry, snapshot);
       list.append(row);
     });
   }
 
-  function updateProgressBar(barId, value) {
-    const bar = $(barId);
-    const percent = clampPercent(value);
-    if (!bar) return;
-    if (percent === null) {
-      bar.hidden = true;
-      bar.style.width = '0%';
-      return;
-    }
-    bar.hidden = false;
-    bar.style.width = `${percent}%`;
-  }
-
   function renderAttribution(snapshot) {
-    const attribution = isRecord(snapshot) && isRecord(snapshot.attribution) ? snapshot.attribution : {};
-    const observed = finiteNumber(attribution.observedPercent);
-    const estimated = finiteNumber(attribution.estimatedPercent);
-    const unattributed = finiteNumber(attribution.unattributedPercent);
-    const incomplete = /lower-bound/.test(safeText(attribution.estimatedPercentCoverage, ''));
-    const attributedTotal = !incomplete && observed !== null && observed > 0 && estimated !== null
-      ? Math.min(100, Math.max(0, (estimated / observed) * 100))
-      : null;
-    const statusText = incomplete ? '等待完整记录' : observed === 0 ? '等待额度变化' : '等待采样';
-    setText('attributionTotal', attributedTotal === null ? statusText : formatPercent(attributedTotal), '等待采样');
-    $('attributionTotal')?.classList.toggle('attribution-status', attributedTotal === null);
-    setText('observedPercent', observed === null || incomplete ? '等待采样' : formatPercent(observed), '等待采样');
-    setText('estimatedPercent', estimated === null || incomplete ? '等待采样' : formatPercent(estimated), '等待采样');
-    setText('unattributedPercent', incomplete || unattributed === null ? '等待采样' : formatPercent(unattributed), '等待采样');
-    updateProgressBar('observedBar', observed);
-    updateProgressBar('estimatedBar', estimated);
-    updateProgressBar('unattributedBar', unattributed);
-    const sinceDate = parseDate(attribution.since);
-    setText('attributionSince', sinceDate ? `从 ${formatDate(sinceDate)}` : safeText(attribution.since, '等待样本'), '等待样本');
-    setText('attributionWindow', safeText(attribution.windowLabel, '尚未收到窗口范围。'), '尚未收到窗口范围。');
-    setText('attributionNote', `${attribution.excludedIncompleteHistory === true
-      ? '已跳过较早的不完整记录，以上比例和额度从标注时间起计算。'
-      : '以上比例和额度按统计窗口内的完整记录计算。'}任务总额度仍包含窗口内可用的历史估算；归因可能混入其他设备消耗。`);
+    renderAttributionScopes(snapshot);
   }
 
   function renderAccountWindows(snapshot) {
@@ -1164,172 +1233,8 @@ import { formatTaskPercent, resetDeadline } from './dashboard-utils.mjs';
     });
   }
 
-  function createSvgElement(tag, attributes = {}) {
-    const element = document.createElementNS(SVG_NS, tag);
-    Object.entries(attributes).forEach(([name, value]) => element.setAttribute(name, String(value)));
-    return element;
-  }
-
-  function formatTrendStart(value, fallback = '时间待定') {
-    const date = value instanceof Date ? value : parseDate(value);
-    if (!date) return fallback;
-    try {
-      const parts = new Intl.DateTimeFormat('zh-CN', {
-        month: 'numeric',
-        day: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit',
-        hourCycle: 'h23',
-      }).formatToParts(date).reduce((map, part) => {
-        map[part.type] = part.value;
-        return map;
-      }, {});
-      return `${parts.month}/${parts.day} ${parts.hour}:${parts.minute}`;
-    } catch (_error) {
-      return fallback;
-    }
-  }
-
   function renderTrend(snapshot) {
-    const chart = $('trendChart');
-    if (!chart) return;
-    chart.replaceChildren();
-    const history = isRecord(snapshot) && Array.isArray(snapshot.attributionHistory)
-      ? snapshot.attributionHistory : [];
-    let points = history
-      .map((point) => ({
-        at: parseDate(point && point.at),
-        observedPercent: finiteNumber(point && point.observedPercent),
-        estimatedPercent: finiteNumber(point && point.estimatedPercent),
-        unattributedPercent: finiteNumber(point && point.unattributedPercent),
-        segment: Number.isInteger(point?.segment) && point.segment >= 0 ? point.segment : 0,
-      }))
-      .filter((point) => point.at !== null &&
-        point.observedPercent !== null && point.observedPercent >= 0 &&
-        point.estimatedPercent !== null && point.estimatedPercent >= 0 &&
-        point.unattributedPercent !== null && point.unattributedPercent >= 0)
-      .sort((a, b) => a.at - b.at);
-    if (points.length === 0) {
-      chart.append(textElement('div', 'empty-state chart-empty', '尚无额度消耗样本 · 完成官方额度读取后会出现'));
-      setText('trendLatest', '等待消耗样本', '等待消耗样本');
-      return;
-    }
-    const attribution = isRecord(snapshot) && isRecord(snapshot.attribution) ? snapshot.attribution : {};
-    const sinceDate = parseDate(attribution.since);
-    const throughDate = parseDate(attribution.through || snapshot.now);
-    const firstPoint = points[0];
-    if (sinceDate && sinceDate.getTime() < firstPoint.at.getTime()) {
-      points = [{
-        at: sinceDate,
-        observedPercent: 0,
-        estimatedPercent: 0,
-        unattributedPercent: 0,
-        segment: firstPoint.segment,
-      }, ...points];
-    }
-    const lastPoint = points.at(-1);
-    if (throughDate && throughDate.getTime() > lastPoint.at.getTime()) {
-      points = [...points, { ...lastPoint, at: throughDate }];
-    }
-    const width = Math.max(240, Math.min(680, chart.clientWidth || 680));
-    const height = 220;
-    const padding = { top: 42, right: 20, bottom: 34, left: 56 };
-    const innerWidth = width - padding.left - padding.right;
-    const innerHeight = height - padding.top - padding.bottom;
-    const series = [
-      { key: 'observedPercent', label: '已观察', className: 'trend-line-observed' },
-      { key: 'estimatedPercent', label: '会话估算', className: 'trend-line-estimated' },
-      { key: 'unattributedPercent', label: '未归因', className: 'trend-line-unattributed' },
-    ];
-    const values = points.flatMap((point) => series.map((item) => point[item.key]));
-    const rawMax = Math.max(...values, 0);
-    const max = Math.max(1, rawMax * 1.12);
-    const min = 0;
-    const firstAt = points[0].at.getTime();
-    const timeSpan = points[points.length - 1].at.getTime() - firstAt;
-    const scaleX = (index) => padding.left + (timeSpan <= 0 ? innerWidth / 2
-      : (points[index].at.getTime() - firstAt) * innerWidth / timeSpan);
-    const scaleY = (value) => padding.top + ((max - value) / (max - min || 1)) * innerHeight;
-
-    const svg = createSvgElement('svg', {
-      viewBox: `0 0 ${width} ${height}`,
-      role: 'img',
-      focusable: 'false',
-      'aria-label': '累计额度消耗随时间变化的趋势图',
-    });
-    const title = createSvgElement('title');
-    title.textContent = '累计额度消耗趋势';
-    svg.append(title);
-    [0, 0.5, 1].forEach((fraction) => {
-      const y = padding.top + innerHeight * fraction;
-      svg.append(createSvgElement('line', {
-        x1: padding.left,
-        x2: width - padding.right,
-        y1: y,
-        y2: y,
-        class: 'chart-grid-line',
-      }));
-      const label = createSvgElement('text', {
-        x: padding.left - 10,
-        y: y + 4,
-        'text-anchor': 'end',
-        class: 'chart-axis-label',
-      });
-      label.textContent = formatPercent(max - (max - min) * fraction);
-      svg.append(label);
-    });
-    const pointPosition = (index, key) => `${scaleX(index).toFixed(2)} ${scaleY(points[index][key]).toFixed(2)}`;
-    const segmentIndices = new Map();
-    points.forEach((point, index) => {
-      const indices = segmentIndices.get(point.segment) || [];
-      indices.push(index);
-      segmentIndices.set(point.segment, indices);
-    });
-    series.forEach((item) => {
-      for (const indices of segmentIndices.values()) {
-        const pathData = indices.map((index, position) =>
-          `${position === 0 ? 'M' : 'L'} ${pointPosition(index, item.key)}`).join(' ');
-        svg.append(createSvgElement('path', {
-          d: pathData,
-          class: `trend-line ${item.className}`,
-          fill: 'none',
-          'aria-label': `${item.label}累计额度消耗`,
-        }));
-      }
-    });
-    if (points.length <= 30) {
-      points.forEach((point, index) => {
-        series.forEach((item) => {
-          const circle = createSvgElement('circle', {
-            cx: scaleX(index),
-            cy: scaleY(point[item.key]),
-            r: 3,
-            class: `trend-point ${item.className}`,
-          });
-          circle.setAttribute('aria-label', `${item.label} ${formatPercent(point[item.key])} ${formatDate(point.at, '')}`.trim());
-          svg.append(circle);
-        });
-      });
-    }
-    const last = points.at(-1);
-    series.forEach((item, index) => {
-      const label = createSvgElement('text', {
-        x: width - padding.right,
-        y: 16 + index * 12,
-        'text-anchor': 'end',
-        class: `trend-value-label ${item.className}`,
-      });
-      label.textContent = `${item.label} ${formatPercent(last[item.key])}`;
-      svg.append(label);
-    });
-    const firstLabel = createSvgElement('text', { x: padding.left, y: height - 10, class: 'chart-axis-label' });
-    firstLabel.textContent = formatDate(points[0].at, '开始');
-    svg.append(firstLabel);
-    const lastLabel = createSvgElement('text', { x: width - padding.right, y: height - 10, 'text-anchor': 'end', class: 'chart-axis-label' });
-    lastLabel.textContent = formatDate(last.at, '现在');
-    svg.append(lastLabel);
-    chart.append(svg);
-    setText('trendLatest', `统计自 ${formatTrendStart(points[0].at)} · 累计已观察 ${formatPercent(last.observedPercent)}`, '等待消耗样本');
+    renderQuotaTrend(snapshot);
   }
 
   function formatTokenCount(value) {
@@ -2216,6 +2121,19 @@ import { formatTaskPercent, resetDeadline } from './dashboard-utils.mjs';
       state.modelSelectedId = modelSelect.value || null;
       renderModelOverview(state.snapshot || {});
     });
+
+    const sessionSort = $('sessionSort');
+    if (sessionSort) sessionSort.addEventListener('change', () => {
+      if (state.sessionDrag || state.providerSaving) return;
+      state.sessionSort = sessionSortPreference({ sort: sessionSort.value }).sort;
+      if (state.sessionSort === 'manual' && !state.sessionManualOrder.length) {
+        state.sessionManualOrder = state.sessionRows.map(row => row.id).filter(Boolean);
+      }
+      state.sessionPage = 0;
+      saveSessionSort();
+      renderSessionList(state.snapshot || {});
+    });
+    window.addEventListener('blur', finishSessionDrag);
 
     const sessionSearch = $('sessionSearch');
     if (sessionSearch) sessionSearch.addEventListener('input', () => {

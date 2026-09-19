@@ -2,13 +2,32 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { formatTaskPercent, resetDeadline } from '../web/dashboard-utils.mjs';
 
-test('small task amounts use at most six decimal places without rounding tiny values to zero',()=>{
-  assert.equal(formatTaskPercent(0.026312345),'0.026312%');
-  assert.equal(formatTaskPercent(0.5),'0.5%');
-  assert.equal(formatTaskPercent(0.000001),'0.000001%');
-  assert.equal(formatTaskPercent(0.00000004),'<0.000001%');
-  assert.equal(formatTaskPercent(1.23456),'1.23%');
-  assert.equal(formatTaskPercent(null),'待估算');
+test('quota precision increases two decimals at a time for smaller amounts', () => {
+  for (const [input, expected] of [
+    [0, '0.00%'], [1.23456, '1.23%'], [0.5, '0.50%'], [0.026312345, '0.03%'],
+    [0.01, '0.01%'], [0.009999, '0.0100%'], [0.00123456, '0.0012%'],
+    [0.0001, '0.0001%'], [0.0000123456, '0.000012%'], [0.000001, '0.000001%'],
+    [0.000000263, '0.00000026%'], [0.00000004, '0.00000004%'], [1e-10, '0.0000000001%'],
+  ]) assert.equal(formatTaskPercent(input), expected);
+});
+
+test('positive amounts remain nonzero across all representable magnitudes', () => {
+  for (let exponent = 0; exponent <= 323; exponent += 1) {
+    const value = Number(`1e-${exponent}`);
+    const formatted = formatTaskPercent(value);
+    assert.ok(Number(formatted.slice(0, -1)) > 0, `${value} became ${formatted}`);
+  }
+  assert.equal(formatTaskPercent(Number.MIN_VALUE), '5e-324%');
+  assert.equal(Number(formatTaskPercent(Number.MIN_VALUE).slice(0, -1)), Number.MIN_VALUE);
+  assert.ok(!formatTaskPercent(1e-100).includes('e'));
+});
+
+test('unavailable quota amounts are distinct from recorded zero', () => {
+  for (const value of [null, undefined, NaN, Infinity, -Infinity, '', '  ', 'invalid', false, {}]) {
+    assert.equal(formatTaskPercent(value), '待估算');
+  }
+  assert.equal(formatTaskPercent('0.000004'), '0.000004%');
+  assert.equal(formatTaskPercent('0'), '0.00%');
 });
 
 test('rendering an old snapshot while polling cannot restart the reset countdown',()=>{

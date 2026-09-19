@@ -45,11 +45,11 @@ Account and task values in these screenshots are synthetic examples. Reset annou
 | View | What you can check |
 | --- | --- |
 | Account | Official remaining and used percentages, a reset countdown showing seconds and the latest sample time, and an estimate of when quota might run out based on observed usage over the last 24 hours. |
-| Tasks | Total and latest-session time, estimated quota use, and average or predicted time per 1% of quota. |
+| Tasks | Total estimated consumption and mean time per 1% of quota; colored charts show each execution's start, end, recorded duration, and consumption. |
 | Child tasks | Expand child rows and see their contribution to the parent task. |
 | Search | Find tasks by title keywords or full IDs, including multiple search terms. Browse five tasks per page, show more, or expand child tasks. Filters and expanded rows stay as you left them during refreshes. |
-| Allocation summary | How much observed account usage can be attributed to local tasks, and how much remains unattributed. |
-| Attribution trend | Three cumulative-consumption curves: blue for observed usage, green for session estimates, and yellow for unattributed usage. Their scope and totals match the attribution card; missing intervals retain breaks. |
+| Allocation summary | Switch between retained history and the current quota period to compare task-attributed and unattributed usage. Historical coverage follows the account statistics window. |
+| Quota trend | Defaults to 0–100% remaining quota per period, rising at resets; switch to cumulative consumption across periods. Hover for time and quota, or select a sample and expand its task shares. |
 | Theoretical usage check | Input, cached input, output, and credits at official prices, plus a comparison of predicted and actual quota changes using earlier samples for calibration. |
 | Models | Colors and labels distinguish own-turn means with an identified execution model and effort, recent local estimates, and missing samples. External costs remain reference information. |
 
@@ -57,13 +57,21 @@ Task estimates prefer each execution's recorded model, cached input, and output 
 
 The theoretical usage check separately shows complete executions inside the monitoring window and matched account samples. The earlier half of the samples calibrates the quota conversion; the later half independently tests it. Insufficient samples show a waiting state, without fitting and validating against the same deductions. Both scopes are labeled: complete-execution credits cannot be subtracted directly from total account percentages.
 
-Task totals cover all locally readable and previously recorded sessions, independently of the account statistics window. The latest-session line includes that session and child work launched within it; a reused child contributes only the matching execution. Parent and child quota is added, while parallel elapsed time is counted once. Running tasks appear first, ordered by their latest session start, newest first. Idle tasks follow, ordered by their last completion, newest first. Totals are labeled as known task duration and known estimated usage. Unrecorded or unreadable history cannot be filled in. The average divides known task duration by known estimated usage; incomplete coverage makes it a rough reference.
+Codex task totals cover all locally readable and previously recorded sessions, independently of the account statistics window. Mean time per 1% divides known total duration by known estimated quota; differing coverage makes it only a rough reference. Parent and child quota is added, while parallel elapsed time is counted once. Parent charts include discovered child executions, and child rows can be expanded individually. API tasks count tokens independently, without adding child usage into the parent again. Unrecorded or unreadable history cannot be filled in.
 
-Running predictions prefer the most recent five seconds, then the current session or historical average with its source identified. Completed tasks keep available predictions; missing evidence shows a waiting state. Elapsed time can include tools and waiting, so a short task does not establish a fixed overnight burn rate.
+Parents always stay above their descendants. Default ordering follows the most recent activity in each task group, including child activity, newest first. Total usage and mean consumption speed support ascending or descending order. Drag a handle to reorder siblings; moving a parent carries its descendants with it. Ordering is saved per provider in the current browser.
 
-The account statistics window is 24 hours by default and can be set from 1 to 168 hours; it controls account trends, attribution, and current rate calibration. Known task totals are retained independently. A single refresh interval updates local tasks, account quota, and the page every 5 seconds by default, adjustable from 5 to 3600 seconds, and you can pause background reads while keeping access to existing records. Changing the account window does not delete Codex conversations; increasing it cannot restore previously removed samples. Amounts below 1% use at most six decimal places; values below 0.000001% show `<0.000001%` while calculations retain full precision.
+Codex task rows show total consumption and mean time per 1% of quota. Each task chart uses a different color per execution; hover or keyboard-focus a segment for its start, end, recorded duration, consumption, and mean rate. When only execution boundaries and totals are known, intermediate progress is explicitly estimated. API charts show token consumption and duration, without quota percentages or time per 1%.
+
+Task estimates depend on the model, other-device usage, and record completeness, so they are not official task bills. Waiting, unrecorded, or “—” values indicate missing reliable data. Chart progress is not a per-second measurement, and account runtime estimates do not guarantee future usage.
+
+The account statistics window is 24 hours by default and can be set from 1 to 168 hours; it controls account trends, attribution, and current rate calibration. Known task totals are retained independently. A single refresh interval updates local tasks, account quota, and the page every 5 seconds by default, adjustable from 5 to 3600 seconds, and you can pause background reads while keeping access to existing records. Changing the account window does not delete Codex conversations; increasing it cannot restore previously removed samples. Amounts use two decimals by default, four below 0.01%, six below 0.0001%, and progressively more for smaller values; extremely small values use scientific notation so positive usage never appears as zero.
+
+Trend-point task shares include unattributed usage and are sorted largest first. A sample may combine more than 1% of account consumption; the details show its actual observed amount rather than inventing separate exact 1% bills.
 
 Some completed short tasks can have missing usage estimated when enough records are available. These recovered estimates are labeled and retained across restarts and later sessions, updated when more complete usage records become available. The attribution panel starts from usable records when older history is incomplete and displays the effective start time. It counts observed account changes; recovered values remain task-level estimates. Not every missing historical value can be recovered.
+
+Historical attribution accumulates retained observations across quota periods; current-period attribution includes only retained observations from the current period. An unknown period start, late monitoring start, or removed older samples can leave that period partly covered, so these values are not a complete bill for the period.
 
 Use the right-edge navigation to jump between sections.
 

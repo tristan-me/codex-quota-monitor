@@ -1,4 +1,5 @@
 import { tokenUsage, usageDifference } from './usage-cost.mjs';
+import { buildSessionSegments } from './chart-data.mjs';
 
 export const normalizeProvider = value => typeof value === 'string' && /^[a-z0-9][a-z0-9._-]{0,79}$/i.test(value)
   ? value.toLowerCase() === 'openai' ? 'openai' : value : null;
@@ -131,38 +132,52 @@ export class ProviderLedger {
   }
 
   apiSnapshot(providerId,now) {
-    const sessions=[];
+    const sessions=[],sessionCharts={};
     for (const task of Object.values(this.state.tasks)) {
-      const usage=empty(), intervals=[], counted=new Set(); let partial=false;
+      const usage=empty(), intervals=[], counted=new Set(),segments=[]; let partial=false;
       for (const [key,turn] of Object.entries(task.turns)) {
         if ((turn.modelProvider || 'unknown') !== providerId || !turn.tokenUsage) continue;
         const observed = [...Object.values(task.observed[key] || {}),
           ...Object.values(task.prefixes?.[key] || {}).map(p=>p.tokenUsage)];
         // Unknown full-turn usage includes the sampled suffix; remove that
         // suffix from its total so provider views never double count it.
+        let amount=turn.tokenUsage.totalTokens;
         if (providerId === 'unknown' && observed.length) {
           const rest=Math.max(0,turn.tokenUsage.totalTokens-observed.reduce((n,v)=>n+v.totalTokens,0));
           if (!rest) continue;
+          amount=rest;
           add(usage,{totalTokens:rest,unclassifiedTokens:rest});
         } else add(usage,turn.tokenUsage);
         counted.add(key); partial ||= turn.partial;
-        intervals.push([turn.startedAt,turn.completedAt ?? (task.status === 'active' ? now : task.lastSeenAt)]);
+        const end=turn.completedAt ?? (task.status === 'active' ? now : task.lastSeenAt);
+        intervals.push([turn.startedAt,end]);
+        segments.push({id:`${task.id}:${key}`,turnId:turn.turnId,taskId:task.id,title:task.title,
+          startedAt:turn.startedAt,completedAt:end,elapsedSeconds:Math.max(0,(end-turn.startedAt)/1000),amount,
+          estimated:true,interpolation:'linear'});
       }
       for(const [key,byProvider] of Object.entries(task.prefixes || {})) {
         const prefix=byProvider[providerId];if(!prefix) continue;
         if(task.turns[key]?.modelProvider===providerId && task.turns[key]?.tokenUsage) continue;
         add(usage,prefix.tokenUsage);counted.add(key);partial=true;
         intervals.push([prefix.startedAt,prefix.completedAt]);
+        segments.push({id:`${task.id}:${key}:prefix`,turnId:prefix.turnId,taskId:task.id,title:task.title,
+          startedAt:prefix.startedAt,completedAt:prefix.completedAt,elapsedSeconds:(prefix.completedAt-prefix.startedAt)/1000,
+          amount:prefix.tokenUsage.totalTokens,estimated:true,interpolation:'linear'});
       }
       for (const [key,byProvider] of Object.entries(task.observed)) {
         const bucket=byProvider[providerId]; if(!bucket) continue;
         // Partial same-provider records already contain their own sampled suffix.
         if (task.turns[key]?.modelProvider === providerId && task.turns[key]?.tokenUsage) continue;
         add(usage,bucket);counted.add(key);partial=true;intervals.push(...(bucket.intervals || []));
+        const spans=bucket.intervals || [],seconds=intervalSeconds(spans);
+        spans.forEach(([a,b],i)=>segments.push({id:`${task.id}:${key}:observed:${i}`,turnId:bucket.turnId,
+          taskId:task.id,title:task.title,startedAt:a,completedAt:b,elapsedSeconds:(b-a)/1000,
+          amount:seconds>0?bucket.totalTokens*(b-a)/1000/seconds:0,estimated:true,interpolation:'linear'}));
       }
       const current=task.modelProvider === providerId;
       if (!counted.size && !current) continue;
-      sessions.push({ id:task.id,title:task.title,model:task.model,reasoningEffort:task.reasoningEffort,
+      sessionCharts[task.id]=buildSessionSegments(segments,{unit:'tokens',now,partial});
+      sessions.push({ id:task.id,title:task.title,parentThreadId:task.parentThreadId || null,model:task.model,reasoningEffort:task.reasoningEffort,
         status:current ? task.status : 'idle',startedAt:task.startedAt,completedAt:task.completedAt,
         totalElapsedSeconds:intervalSeconds(intervals), ...usage, turnCount:counted.size,
         partial:partial || !counted.size,children:[] });
@@ -172,7 +187,7 @@ export class ProviderLedger {
     Object.assign(summary,{taskCount:sessions.length,activeTaskCount:sessions.filter(s=>s.status==='active').length,
       turnCount:sessions.reduce((n,s)=>n+s.turnCount,0),unpricedTurnCount:sessions.reduce((n,s)=>n+s.turnCount,0)});
     return {providerId,providerName:this.catalog(providerId).providers.find(p=>p.id===providerId)?.name || providerId,
-      summary,sessions,since:Math.min(now,...Object.values(this.state.tasks).flatMap(t=>[
+      summary,sessions,sessionCharts,since:Math.min(now,...Object.values(this.state.tasks).flatMap(t=>[
         ...Object.values(t.turns).filter(turn=>(turn.modelProvider||'unknown')===providerId).map(turn=>turn.startedAt),
         ...Object.values(t.observed).flatMap(group=>group[providerId]?[group[providerId].since]:[]),
         ...Object.values(t.prefixes || {}).flatMap(group=>group[providerId]?[group[providerId].startedAt]:[])])),until:now,

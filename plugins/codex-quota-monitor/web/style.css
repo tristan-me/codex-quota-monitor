@@ -2835,3 +2835,46 @@ body.compact #main {
 body.compact .app-shell { margin-left:auto; margin-right:auto; }
 
 .reset-stat small.exhaustion-basis { white-space: normal; line-height: 1.5; }
+
+/* Session ordering and interactive usage charts. */
+.session-sort { min-width: 190px; max-width: 100%; }
+.session-tools { flex-wrap: wrap; }
+.chart-controls { display:flex; align-items:center; flex-wrap:wrap; gap:10px; margin:10px 0 16px; color:var(--muted); font-size:12px; }
+.chart-controls .select-control { min-width:180px; width:auto; }
+.session-drag-handle { flex:none; cursor:grab; padding:6px 9px; border:1px solid var(--border); border-radius:8px; color:var(--muted); background:transparent; touch-action:none; }
+.session-drag-handle:active { cursor:grabbing; }
+body.session-drag-active { user-select:none; cursor:grabbing; }
+.session-row.is-dragging { opacity:.5; }
+.session-row.is-drop-before { border-top:3px solid var(--accent); }
+.session-row.is-drop-after { border-bottom:3px solid var(--accent); }
+.session-chart { margin-top:14px; border-top:1px solid var(--border); padding-top:12px; position:relative; }
+.session-chart-header { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; color:var(--muted); font-size:11px; }
+.session-chart-svg { display:block; width:100%; height:150px; overflow:visible; }
+.session-chart-line { fill:none; stroke-width:2.5; vector-effect:non-scaling-stroke; cursor:crosshair; }
+.session-chart-point { cursor:crosshair; stroke-width:1.5; vector-effect:non-scaling-stroke; }
+.chart-interaction { cursor:crosshair; }
+.chart-interaction:focus,.session-chart-line:focus,.session-chart-point:focus { outline:2px solid var(--accent); outline-offset:3px; }
+.chart-tooltip { position:fixed; z-index:10000; max-width:min(340px,calc(100vw - 24px)); padding:13px 15px; background:#111d30; border:1px solid #476074; border-radius:12px; color:#e7f1f7; box-shadow:0 12px 35px #0008; pointer-events:none; font-size:12px; }
+.chart-tooltip[hidden] { display:none; }
+.chart-tooltip-title { font-size:13px; font-weight:650; margin-bottom:8px; overflow-wrap:anywhere; }
+.chart-tooltip-row { display:flex; justify-content:space-between; gap:18px; margin:5px 0; }
+.chart-tooltip-label { color:#acbacc; }
+.chart-tooltip-value { font-variant-numeric:tabular-nums; text-align:right; }
+.chart-tooltip-note { font-size:11px; color:#acbacc; margin-top:8px; line-height:1.5; }
+.chart-reset-marker { stroke:#687b90; stroke-dasharray:4 5; stroke-width:1; }
+.trend-selected-point { stroke:#fff; stroke-width:3; }
+.trend-details { border-top:1px solid var(--border); padding-top:12px; margin-top:12px; font-size:12px; }
+.trend-details-empty,.trend-detail-note { color:var(--muted); line-height:1.6; }
+.trend-point-summary { display:flex; flex-wrap:wrap; gap:10px 20px; margin:8px 0 12px; }
+.trend-contributors { margin-top:12px; }
+.trend-contributors summary { cursor:pointer; color:var(--accent); padding:8px 0; }
+.trend-contributor-row { display:grid; grid-template-columns:minmax(100px,1fr) minmax(70px,auto) minmax(70px,auto); gap:12px; padding:9px 0; border-bottom:1px solid var(--border); }
+.trend-contributor-name { overflow-wrap:anywhere; }
+.trend-contributor-amount,.trend-contributor-share { text-align:right; font-variant-numeric:tabular-nums; }
+@media(max-width:600px) { .session-sort { width:100%; } .session-chart-svg { height:140px; } .chart-controls .select-control { width:100%; } }
+.session-chart-caption,.session-chart-empty { color:var(--muted); font-size:11px; line-height:1.5; margin:6px 0; }
+.trend-contributors-details > summary { cursor:pointer; color:var(--accent); padding:8px 0; }
+.trend-contributor-head { color:var(--muted); font-weight:600; }
+.trend-reset-badge { color:var(--accent); background:#64e4c018; border-radius:6px; padding:3px 6px; }
+.trend-selected-point > .trend-point { stroke:#fff; stroke-width:3; }
+.chart-tooltip-title { display:block; }

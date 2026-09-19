@@ -6,6 +6,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { buildAttributionTrend } from "../server/attribution-trend.mjs";
 import { buildModelOverview } from "../server/model-overview.mjs";
+import { buildChartData, buildSessionSegments } from "../server/chart-data.mjs";
 import { startService } from "../server/service.mjs";
 import { COST_RATE_CHECKED_AT, COST_RATE_SOURCE, usageCredits } from "../server/usage-cost.mjs";
 
@@ -360,6 +361,7 @@ function syntheticAttribution(sampledAt, windowLabel) {
   ];
   return {
     since,
+    events,
     through: sampledAt,
     trend: buildAttributionTrend(events, {
       since,
@@ -474,6 +476,22 @@ export function createReadmeSnapshot({ now = Date.now(), resetRadar = null } = {
     state,
     now: sampledAt,
   });
+  const eventHistory=[{at:attributionData.since,remainingPercent:80},
+    ...attributionData.events.map((e,i)=>({at:e.at,remainingPercent:i<3?80-[0.8,1.9,3.2][i]:100-[0.7,1.8][i-3]})),
+    {at:sampledAt-30*MINUTE_MS,remainingPercent:100,reset:true}];
+  const chartState={...state,retentionHours:24,history:eventHistory,rollingQuotaEvents:attributionData.events,
+    previous:{identity:'demo:weekly:after-reset'},currentQuotaStartedAt:sampledAt-30*MINUTE_MS,currentQuotaStartKnown:true,
+    rollingAllocations:attributionData.events.map((e,i)=>({id:sessions[i%sessions.length].id,
+      attributionEventId:e.id,at:e.at,percent:e.attributedPercent,quotaIdentity:e.quotaIdentity}))};
+  const chartData=buildChartData({state:chartState,sessions,now:sampledAt,attribution:{...attribution,events:attributionData.events}});
+  for(const row of sessions.flatMap(s=>[s,...(s.children||[])])) {
+    const amount=row.totalEstimatedPercent??row.estimatedPercent;
+    const duration=row.totalElapsedSeconds??row.observationSeconds;
+    chartData.sessionCharts[row.id]=buildSessionSegments([0,1,2].map(i=>({
+      id:`${row.id}:run-${i}`,taskId:row.id,turnId:`demo-run-${i}`,title:row.title,
+      startedAt:sampledAt-(55-i*20)*MINUTE_MS-duration/3*1000,completedAt:sampledAt-(55-i*20)*MINUTE_MS,
+      elapsedSeconds:duration/3,amount:amount/3})),{unit:'percent',now:sampledAt});
+  }
 
   return {
     version: "0.2.0",
@@ -529,6 +547,7 @@ export function createReadmeSnapshot({ now = Date.now(), resetRadar = null } = {
       stale: false,
     },
     sessions,
+    ...chartData,
     attributionHistory: attribution.history,
     usageComparison,
     attribution: {

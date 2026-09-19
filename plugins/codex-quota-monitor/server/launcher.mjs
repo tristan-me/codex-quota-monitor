@@ -238,6 +238,7 @@ export async function verifyDashboard(record) {
     ["/app.js", "javascript", "fetchSnapshot"],
     ["/style.css", "text/css", ".session-list"],
     ["/dashboard-utils.mjs", "javascript", "resetDeadline"],
+    ["/usage-charts.mjs", "javascript", "createSessionChart"],
   ]) {
     const response = await fetch(base + route, { signal: AbortSignal.timeout(3000) });
     if (!response.ok || !response.headers.get("content-type")?.includes(contentType) ||

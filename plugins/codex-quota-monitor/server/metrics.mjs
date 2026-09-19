@@ -402,6 +402,7 @@ export function normalizeQuotaHistory(history, cutoff, now) {
     byTime.set(point.at, {
       at: point.at,
       remainingPercent: point.remainingPercent,
+      ...(typeof point.quotaIdentity === 'string' ? {quotaIdentity:point.quotaIdentity} : {}),
       ...(point.reset === true ? { reset: true } : {}),
     });
   }
@@ -1585,6 +1586,8 @@ export class Estimator {
       s.previous.identity !== identity ||
       w.usedPercent < s.previous.used;
     if (reset) {
+      s.currentQuotaStartedAt = now;
+      s.currentQuotaStartKnown = Boolean(s.previous) && !unitChanged && !ownerChanged;
       // A quota-window reset must not erase already observed session history.
       Object.assign(s, {
         since: now,
@@ -1709,7 +1712,7 @@ export class Estimator {
     if (w.planType) s.lastKnownPlanType = w.planType;
     const historyReset = reset && Boolean(s.previous) && !unitChanged && !ownerChanged;
     s.previous = { identity, accountKey: owner, used: w.usedPercent, at: now };
-    s.history.push({ at: now, remainingPercent: w.remainingPercent,
+    s.history.push({ at: now, remainingPercent: w.remainingPercent,quotaIdentity:identity,
       ...(historyReset ? { reset: true } : {}) });
     this.pruneRolling(now);
   }

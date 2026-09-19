@@ -235,7 +235,7 @@ export async function startService({
     // Complete the synchronous local scan before advertising a ready service.
     // The collector's remote quota request remains background work by design.
     const assets = new Map(await Promise.all(
-      ["index.html", "app.js", "style.css", "dashboard-utils.mjs"].map(async (file) =>
+      ["index.html", "app.js", "style.css", "dashboard-utils.mjs", "usage-charts.mjs"].map(async (file) =>
         [file, await readFile(join(root, "web", file))]),
     ));
     await serviceCollector.init();
@@ -317,6 +317,7 @@ export async function startService({
           "/app.js": "app.js",
           "/style.css": "style.css",
           "/dashboard-utils.mjs": "dashboard-utils.mjs",
+          "/usage-charts.mjs": "usage-charts.mjs",
         }[url.pathname];
         if (!file) return json(404, { error: "Not found" });
         const bytes = assets.get(file);
@@ -326,6 +327,7 @@ export async function startService({
             "app.js": "text/javascript; charset=utf-8",
             "style.css": "text/css; charset=utf-8",
             "dashboard-utils.mjs": "text/javascript; charset=utf-8",
+            "usage-charts.mjs": "text/javascript; charset=utf-8",
           }[file],
           ...security,
         });

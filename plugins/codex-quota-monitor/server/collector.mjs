@@ -10,6 +10,7 @@ import { buildModelOverview } from "./model-overview.mjs";
 import { buildUsageComparison } from "./usage-comparison.mjs";
 import { buildAttributionTrend } from "./attribution-trend.mjs";
 import { ProviderLedger, normalizeProvider, migrateProviderScope } from "./provider-ledger.mjs";
+import { buildChartData } from "./chart-data.mjs";
 import {
   buildResetRadar,
   fetchResetReference,
@@ -580,14 +581,17 @@ export class Collector {
   snapshot() {
     const now = Date.now();
     const providerSelection = this.providerLedger.catalog(this.settings.selectedProvider);
-    if (this.providerAware && providerSelection.selectedId !== 'openai') return {
+    if (this.providerAware && providerSelection.selectedId !== 'openai') {
+      const apiUsage=this.providerLedger.apiSnapshot(providerSelection.selectedId,now);
+      return {
       version:'0.2.0',dataSchema:2,mode:this.demo?'demo':'live',dataSource:'local-api-provider-records',
       now,settings:this.settings,providerSelection,
-      apiUsage:this.providerLedger.apiSnapshot(providerSelection.selectedId,now),
+      apiUsage,sessionCharts:apiUsage.sessionCharts,
       account:{windows:[],summary:null,plan:{type:null},error:null,stale:false},sessions:[],
       diagnostics:this.diagnostics,cost:{...this.cost,requestsPerHour:this.settings.paused?0:3600/this.settings.quotaPollSeconds},
       capabilities:{nativeInline:false,windowPopup:false,autoSwitchScope:'unavailable'},
-    };
+      };
+    }
     const state = this.estimator.state;
     const observationSince = this.estimator.observationSince(now);
     const window = mainWindow(this.account.windows);
@@ -656,6 +660,7 @@ export class Collector {
       providerSelection,
       account: { ...this.account, stale },
       sessions,
+      ...buildChartData({state,sessions,now,calibration:this.estimator.costCalibration,attribution}),
       attributionHistory: buildAttributionTrend(attribution.events, {
         since: attribution.since, through: now, windowLabel: window?.label,
       }).history,

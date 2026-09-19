@@ -160,8 +160,17 @@
               </div>
               <span id="sessionRefreshHint" class="panel-header-meta">每 5 秒更新</span>
             </div>
-            <p id="sessionsNote" class="panel-note">累计展示全部本机可读和已记录的任务，不受账户统计窗口限制。历史未记录或不可读的部分无法补齐；额度优先按各轮模型、缓存输入和输出用量校准，旧记录仍可能不完整。平均值为已知总耗时除以已知额度；二者覆盖范围不同时，仅作粗略参考。父任务包含子任务，最近一次包含本轮启动的子任务。运行中优先使用最近 5 秒的估算，缺少近期样本时参考本轮或历史均速；等待期间不代表持续推理。额度与速度为估算，本机执行记录可能不完整。</p>
+            <p id="sessionsNote" class="panel-note">父任务始终在子任务上方；可按时间、总消耗或平均速度排序，也可拖动左侧手柄。图表按执行轮次分色，悬停查看该轮耗时、消耗和均速。额度为本机记录校准估算；缺少逐点记录时，轮次内走势按起止与总额估算。任务总额不受账户统计窗口限制。</p>
             <div class="session-tools">
+              <label class="session-search-label" for="sessionSort">排序</label>
+              <select id="sessionSort" class="select-control session-sort" aria-label="会话排序">
+                <option value="time-desc">时间 · 从新到旧</option>
+                <option value="total-desc">总消耗 · 从大到小</option>
+                <option value="total-asc">总消耗 · 从小到大</option>
+                <option value="speed-desc">消耗速度 · 从快到慢</option>
+                <option value="speed-asc">消耗速度 · 从慢到快</option>
+                <option value="manual">手动拖动排序</option>
+              </select>
               <label id="sessionSearchLabel" class="session-search-label" for="sessionSearch">筛选会话</label>
               <div class="session-search-control">
                 <input id="sessionSearch" type="search" autocomplete="off" spellcheck="false" placeholder="标题关键词或完整 ID；空格/逗号分隔">
@@ -220,6 +229,13 @@
               <span>监控期间已归因比例</span>
               <strong id="attributionTotal">等待采样</strong>
             </div>
+            <div class="chart-controls">
+              <label for="attributionScope">归因范围</label>
+              <select id="attributionScope" class="select-control">
+                <option value="history">历史归因</option>
+                <option value="current">当前额度期归因</option>
+              </select>
+            </div>
             <div class="attribution-bars" aria-label="额度归因明细">
               <div class="bar-row">
                 <div class="bar-label"><span class="legend-dot dot-observed" aria-hidden="true"></span><span>已观察</span><strong id="observedPercent">等待采样</strong></div>
@@ -242,17 +258,25 @@
             <div class="panel-header">
               <div>
                 <p class="section-kicker">QUOTA TREND</p>
-                <h2 id="trend-title">累计额度消耗趋势</h2>
+                <h2 id="trend-title">额度消耗趋势</h2>
               </div>
               <span id="trendLatest" class="panel-header-meta">等待消耗样本</span>
             </div>
-            <div class="trend-legend" aria-label="趋势线说明">
+            <div class="chart-controls">
+              <label for="trendMode">显示方式</label>
+              <select id="trendMode" class="select-control">
+                <option value="remaining">额度余量 · 每期 100%</option>
+                <option value="cumulative">累计消耗 · 跨额度期</option>
+              </select>
+            </div>
+            <div id="trendLegend" class="trend-legend" aria-label="趋势线说明">
               <span><i class="trend-legend-line trend-legend-line-observed" aria-hidden="true"></i>已观察</span>
               <span><i class="trend-legend-line trend-legend-line-estimated" aria-hidden="true"></i>会话估算</span>
               <span><i class="trend-legend-line trend-legend-line-unattributed" aria-hidden="true"></i>未归因</span>
             </div>
             <div id="trendChart" class="trend-chart" role="img" aria-label="累计额度消耗趋势图"></div>
-            <p class="chart-caption">三条线显示同一统计窗口内的累计额度消耗；它们不表示账户剩余余额。</p>
+            <p id="trendCaption" class="chart-caption">悬停查看时间和额度；点击采样点后展开当次扣减的会话明细。一次采样可能包含多于 1% 的变化。</p>
+            <div id="trendDetails" class="trend-details" aria-live="polite"></div>
           </section>
 
           <section id="usageComparisonSection" class="panel usage-comparison-panel panel-wide" data-provider-view="codex" aria-labelledby="usage-comparison-title">
