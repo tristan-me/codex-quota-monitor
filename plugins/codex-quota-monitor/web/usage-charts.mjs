@@ -121,21 +121,36 @@ function colorsFor(chartId, segments) {
   return colors;
 }
 
-function executionGroups(segments) {
-  const groups = [];
-  for (const segment of [...segments].sort((a, b) => a.points[0].at - b.points[0].at)) {
-    const start = segment.points[0];
-    const end = segment.points.at(-1);
-    let group = groups.at(-1);
-    if (!group || start.at > group.end.at) {
-      group = { start, end, endId: segment.id };
-      groups.push(group);
-    } else if (end.at > group.end.at || (end.at === group.end.at && end.value > group.end.value)) {
-      group.end = end;
-      group.endId = segment.id;
-    }
+// Map wall-clock timestamps onto the union of recorded running spans. Parallel
+// executions share elapsed time, and idle gaps occupy no horizontal space.
+export function createSessionRuntimeAxis(intervals) {
+  const runs = [];
+  for (const [start, end] of intervals.filter(span => Array.isArray(span) &&
+      Number.isFinite(span[0]) && Number.isFinite(span[1]) && span[1] >= span[0])
+    .map(span => span.slice(0, 2)).sort((a, b) => a[0] - b[0])) {
+    const previous = runs.at(-1);
+    if (previous && start <= previous.end) previous.end = Math.max(previous.end, end);
+    else runs.push({ start, end, elapsed: 0 });
   }
-  return groups;
+  let durationMs = 0;
+  for (const run of runs) {
+    run.elapsed = durationMs;
+    durationMs += run.end - run.start;
+  }
+  return {
+    durationMs,
+    elapsedAt(at) {
+      if (!Number.isFinite(at)) return null;
+      let left = 0, right = runs.length;
+      while (left < right) {
+        const middle = Math.floor((left + right) / 2);
+        if (runs[middle].start <= at) left = middle + 1;
+        else right = middle;
+      }
+      const run = runs[left - 1];
+      return run ? run.elapsed + Math.min(at, run.end) - run.start : 0;
+    },
+  };
 }
 
 const linearized = segment => segment.linearized === true || /^linear(?:-|$)/.test(textValue(segment.interpolation));
@@ -268,7 +283,7 @@ export function createSessionChart(chart, { id = '', preferenceKey = id, formatP
   const rawMaximum = Math.max(0, ...points.map(point => point.value));
   const maximum = rawMaximum > 0 ? rawMaximum * 1.12 : 1;
   const colors = colorsFor(String(id || plotted[0].taskId || plotted[0].id), segments);
-  const groups = executionGroups(plotted);
+  const runtime = createSessionRuntimeAxis(plotted.map(segment => [segment.points[0].at, segment.points.at(-1).at]));
   const storageKey = SESSION_CHART_KEY + encodeURIComponent(String(preferenceKey || id || plotted[0].taskId || plotted[0].id));
   if (!sessionChartPreferences.has(storageKey)) sessionChartPreferences.set(storageKey, readPreference(storageKey, ['true', 'false'], 'false') === 'true');
   let expanded = sessionChartPreferences.get(storageKey);
@@ -288,35 +303,16 @@ export function createSessionChart(chart, { id = '', preferenceKey = id, formatP
     const height = expanded ? 118 : 60;
     const padding = expanded ? { top: 10, right: 12, bottom: 24, left: tokenUnit ? 54 : 52 }
       : { top: 6, right: 6, bottom: 6, left: 6 };
-    const x = at => padding.left + (lastAt > firstAt ? (at - firstAt) / (lastAt - firstAt) : 0.5) * (width - padding.left - padding.right);
+    const x = at => padding.left + (runtime.durationMs > 0 ? runtime.elapsedAt(at) / runtime.durationMs : 0.5) * (width - padding.left - padding.right);
     const y = value => padding.top + (1 - value / maximum) * (height - padding.top - padding.bottom);
     const svg = svgElement('svg', { viewBox: `0 0 ${width} ${height}`, class: 'session-chart-svg', role: 'group', 'aria-label': container.getAttribute('aria-label') });
-    svg.append(svgElement('title', {}, '悬停或聚焦执行线段、采样点可查看耗时和消耗；横轴保留实际时间间隔'));
+    svg.append(svgElement('title', {}, '横轴按累计运行时长排列；首尾标记真实时间，悬停或聚焦可查看实际时间、耗时和消耗'));
     if (expanded) addAxes(svg, { width, height, padding, maximum, firstAt, lastAt, label: tokenUnit ? value => {
       if (value >= 1000000) return `${(value / 1000000).toFixed(1)}M`;
       if (value >= 1000) return `${(value / 1000).toFixed(1)}k`;
       return Math.round(value).toLocaleString('zh-CN');
     } : formatPercent });
 
-    for (let index = 1; index < groups.length; index += 1) {
-      const start = groups[index - 1].end;
-      const end = groups[index].start;
-      const unchanged = Math.abs(end.value - start.value) <= Number.EPSILON * Math.max(1, start.value, end.value) * 8;
-      const d = pathData([start, end], x, y);
-      const connector = svgElement('g', { class: 'chart-interaction session-chart-connector', tabindex: '0', role: 'img', 'data-start-at': start.at, 'data-end-at': end.at });
-      connector.append(svgElement('path', { d, class: 'session-chart-connector-line', fill: 'none', stroke: unchanged ? colors.get(groups[index - 1].endId) : 'var(--muted, #8493a8)', 'stroke-width': 2.5,
-        'stroke-dasharray': unchanged ? 'none' : '4 3', 'vector-effect': 'non-scaling-stroke' }),
-        svgElement('path', { d, class: 'chart-hit-target', fill: 'none', stroke: 'transparent', 'stroke-width': 12, 'pointer-events': 'stroke', 'vector-effect': 'non-scaling-stroke' }));
-      popup.bind(connector, {
-        title: '执行间隔',
-        rows: [['间隔开始', formatTime(start.at, true)], ['间隔结束', formatTime(end.at, true)],
-          ['经过时间', formatDuration((end.at - start.at) / 1000, '未记录')],
-          ['开始累计消耗', amount(start.value)], ['结束累计消耗', amount(end.value)]],
-        note: unchanged ? '已记录的累计消耗未变化；连线不代表新增消耗。'
-          : '间隔内缺少执行明细，虚线仅连接已知累计值，不据此新增消耗。',
-      });
-      svg.append(connector);
-    }
     plotted.forEach((segment, index) => {
       const color = colors.get(segment.id);
       const notes = [linearized(segment) ? '轮次内曲线按执行起止时间线性估算；耗时以实际执行记录为准。' : '',
@@ -341,13 +337,13 @@ export function createSessionChart(chart, { id = '', preferenceKey = id, formatP
         control.style.setProperty('--execution-color', color);
         control.append(svgElement('circle', { cx: x(point.at), cy: y(point.value), r: expanded ? 3 : 2, fill: color, class: 'session-chart-point' }),
           svgElement('circle', { cx: x(point.at), cy: y(point.value), r: expanded ? 8 : 5, fill: 'transparent', class: 'chart-hit-target', 'pointer-events': 'all' }));
-        popup.bind(control, { ...content, rows: [['图中时间', formatTime(point.at, true)], ['任务累计消耗', amount(point.value)], ...rows] });
+        popup.bind(control, { ...content, rows: [['实际时间', formatTime(point.at, true)], ['任务累计消耗', amount(point.value)], ...rows] });
         svg.append(control);
       }
     });
     plot.replaceChildren(svg);
-    if (expanded && (chart?.partial || plotted.some(linearized))) {
-      plot.append(element('p', 'session-chart-caption', [chart?.partial ? '仅含可用记录' : '',
+    if (expanded) {
+      plot.append(element('p', 'session-chart-caption', ['横轴为累计运行时长；首尾标记真实时间', chart?.partial ? '仅含可用记录' : '',
         plotted.some(linearized) ? '轮次内走势为线性估算' : ''].filter(Boolean).join(' · ')));
     }
   };
