@@ -74,6 +74,29 @@ async function fixture() {
     },
   };
 }
+test("attribution chart and card share the exact valid suffix after corrupt history", async () => {
+  const f = await fixture();
+  try {
+    const now = Date.now();
+    f.c.estimator.state.rollingQuotaEvents = [
+      { at: now - 4000, percent: 7, attributedPercent: 7, unattributedPercent: 0,
+        coverage: "official-quota-sample" },
+      { at: now - 3000, percent: 9, attributedPercent: 1, unattributedPercent: 0,
+        coverage: "official-quota-sample" },
+      { at: now - 2000, percent: 2, attributedPercent: 1.5, unattributedPercent: 0.5,
+        coverage: "official-quota-sample" },
+    ];
+    const snapshot = f.c.snapshot();
+    const end = snapshot.attributionHistory.at(-1);
+    assert.equal(end.observedPercent, 2);
+    assert.equal(end.observedPercent, snapshot.attribution.observedPercent);
+    assert.equal(end.estimatedPercent, snapshot.attribution.estimatedPercent);
+    assert.equal(end.unattributedPercent, snapshot.attribution.unattributedPercent);
+    assert.equal(snapshot.usageComparison.recorded.since, snapshot.attribution.since);
+  } finally {
+    await f.cleanup();
+  }
+});
 test("ordinary settings never write defaults; explicit opt-in can apply and restore exactly", async () => {
   const f = await fixture();
   try {

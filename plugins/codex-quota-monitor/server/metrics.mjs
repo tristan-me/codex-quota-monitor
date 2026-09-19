@@ -734,6 +734,7 @@ export class Estimator {
       attributedPercent,
       unattributedPercent,
       since,
+      events,
       coverage: events.length ? "rolling" : "none",
       excludedIncompleteHistory,
       sampleCount: events.length,
@@ -1822,6 +1823,8 @@ export class Estimator {
     const latest = s.latestTurns[thread.id];
     const currentTurn = sameTurn(latest, turnIdentity(thread));
     const latestAvailable = !latest || currentTurn;
+    const latestUsage = latestAvailable
+      ? (thread.usageTurns || []).find(turn => sameTurn(turn, turnIdentity(thread))) : null;
     const cutoff = -Infinity;
     const latestSeconds = latestAvailable ? latestTurnDuration(thread, now, cutoff) : null;
     const intervals = executionIntervals(thread, now, latestAvailable, cutoff);
@@ -1865,6 +1868,9 @@ export class Estimator {
       model: thread.model,
       reasoningEffort: thread.reasoningEffort,
       historicalModels: [...new Set((thread.usageTurns || []).map(turn => turn.model).filter(Boolean))],
+      historicalReasoningEfforts: [...new Set((thread.usageTurns || []).map(turn => turn.reasoningEffort).filter(Boolean))],
+      latestTurnModel: latestUsage?.model || null,
+      latestTurnReasoningEffort: latestUsage?.reasoningEffort || null,
       status: thread.status,
       parentThreadId: thread.parentThreadId || null,
       childCount: 0,
@@ -2271,12 +2277,17 @@ export class Estimator {
           estimateEstimated: estimated !== null,
           estimateIncludesRecovery: includesRecovery,
           historicalModels: [...new Set(contributions.flatMap(row => row.historicalModels || []))],
+          historicalReasoningEfforts: [...new Set(contributions.flatMap(row => row.historicalReasoningEfforts || []))],
           estimateUsesModelCosts: contributions.some(row => row.estimateUsesModelCosts),
           estimateIncludesLegacy: contributions.some(row => row.estimateIncludesLegacy),
           estimateStatus: known ? provisional ? "provisional" : "allocated" : "unavailable",
           rateStatus: status === "active" ? rate > 0 ? "recent-estimate" : "no-recent-sample"
             : estimated > 0 && totalElapsedSeconds > 0 ? "observed-average" : "no-timed-sample",
           ownStatus: own.status,
+          ownHistoricalModels: own.historicalModels,
+          ownHistoricalReasoningEfforts: own.historicalReasoningEfforts,
+          ownLatestTurnModel: own.latestTurnModel,
+          ownLatestTurnReasoningEffort: own.latestTurnReasoningEffort,
           ownEstimatedPercent: own.estimatedPercent,
           ownSecondsPerPercent: own.secondsPerPercent,
           ownAverageSecondsPerPercent: own.averageSecondsPerPercent,

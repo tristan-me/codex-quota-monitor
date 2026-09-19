@@ -81,7 +81,7 @@ test("own root metrics and flat children are attributed once per model/effort", 
   assert.equal(luna.quotaPercentPerHour, 60);
 });
 
-test("an average local anchor estimates another effort of the same model only", () => {
+test("an average local anchor does not invent another effort's subscription rate", () => {
   const overview = buildModelOverview({
     models: [
       model("gpt-5.6-terra", ["medium"]),
@@ -109,11 +109,11 @@ test("an average local anchor estimates another effort of the same model only", 
   assert.equal(terra.sourceKind, "local-average");
   assert.equal(terra.secondsPerPercent, 160);
   assert.ok(Math.abs(terra.quotaPercentPerHour - 3600 / 160) < 1e-12);
-  assert.equal(luna.sourceKind, "radar-relative");
-  assert.ok(luna.secondsPerPercent > 0);
-  assert.ok(luna.quotaPercentPerHour > 0);
-  assert.match(luna.rateBasis, /同一模型/);
-  assert.deepEqual(luna.referenceAnchor, {model:"gpt-5.6-terra",effort:"medium"});
+  assert.equal(luna.sourceKind, "radar-reference");
+  assert.equal(luna.secondsPerPercent, null);
+  assert.equal(luna.quotaPercentPerHour, null);
+  assert.match(luna.rateBasis, /不能直接换算/);
+  assert.equal(luna.referenceAnchor, null);
 });
 
 test("Spark never becomes the main Codex Radar anchor", () => {
@@ -238,7 +238,7 @@ test('a cheap-model sample never invents expensive-model subscription rates', ()
     assert.equal(astra.calculationKind,'reference-only');
     assert.ok(astra.referenceCostPerHour>0);
   }
-  assert.equal(row(overview,'gpt-5.6-luna','low').referenceAnchor.model,'gpt-5.6-luna');
+  assert.equal(row(overview,'gpt-5.6-luna','low').referenceAnchor,null);
 });
 
 test('a model uses its own anchor even when another model has much more history', () => {
@@ -246,9 +246,167 @@ test('a model uses its own anchor even when another model has much more history'
     sessions:[{model:'gpt-5.6-luna',reasoningEffort:'max',averageSecondsPerPercent:3000,observationSeconds:100000},
       {model:'gpt-6-astra',reasoningEffort:'ultra',averageSecondsPerPercent:6000,observationSeconds:100}],now});
   const high=row(overview,'gpt-6-astra','high');
-  assert.deepEqual(high.referenceAnchor,{model:'gpt-6-astra',effort:'ultra'});
+  assert.equal(high.sourceKind,'radar-reference');
+  assert.equal(high.referenceAnchor,null);
+  assert.equal(high.secondsPerPercent,null);
   const ultra=row(overview,'gpt-6-astra','ultra');
-  assert.ok(Math.abs(high.quotaPercentPerHour-(.6*high.referenceCostPerHour/ultra.referenceCostPerHour))<1e-12);
+  assert.equal(ultra.secondsPerPercent,6000);
+  assert.equal(high.quotaPercentPerHour,null);
+});
+
+test('mixed task history is never labeled with its latest model and effort tag', () => {
+  const overview = buildModelOverview({
+    models: [model('gpt-6-astra', ['max']), model('gpt-5.6-sol', ['xhigh'])],
+    sessions: [{
+      model: 'gpt-6-astra',
+      reasoningEffort: 'max',
+      historicalModels: ['gpt-5.6-sol', 'gpt-6-astra'],
+      historicalReasoningEfforts: ['xhigh', 'max'],
+      averageSecondsPerPercent: 12,
+      observationSeconds: 600,
+    }],
+    now,
+  });
+  const astra = row(overview, 'gpt-6-astra', 'max');
+  assert.equal(astra.sourceKind, 'radar-reference');
+  assert.equal(astra.secondsPerPercent, null);
+  assert.equal(row(overview, 'gpt-5.6-sol', 'xhigh').secondsPerPercent, null);
+});
+
+test('a single recorded execution identity supersedes stale task metadata', () => {
+  const overview = buildModelOverview({
+    models: [model('gpt-6-astra', ['max']), model('gpt-5.6-sol', ['xhigh'])],
+    sessions: [{
+      model: 'gpt-6-astra',
+      reasoningEffort: 'max',
+      historicalModels: ['gpt-5.6-sol'],
+      historicalReasoningEfforts: ['xhigh'],
+      averageSecondsPerPercent: 180,
+      observationSeconds: 300,
+    }],
+    now,
+  });
+  assert.equal(row(overview, 'gpt-5.6-sol', 'xhigh').secondsPerPercent, 180);
+  assert.equal(row(overview, 'gpt-6-astra', 'max').secondsPerPercent, null);
+});
+
+test('model history without effort history cannot borrow the latest effort tag', () => {
+  const overview = buildModelOverview({
+    models: [model('gpt-6-astra', ['max'])],
+    sessions: [{
+      model: 'gpt-6-astra',
+      reasoningEffort: 'max',
+      historicalModels: ['gpt-6-astra'],
+      averageSecondsPerPercent: 180,
+      observationSeconds: 300,
+    }],
+    now,
+  });
+  const astra = row(overview, 'gpt-6-astra', 'max');
+  assert.equal(astra.sourceKind, 'radar-reference');
+  assert.equal(astra.secondsPerPercent, null);
+});
+
+test('explicitly unknown latest execution identity does not fall back to history or task tags', () => {
+  const overview = buildModelOverview({
+    models: [model('gpt-6-astra', ['max'])],
+    sessions: [{
+      model: 'gpt-6-astra',
+      reasoningEffort: 'max',
+      historicalModels: ['gpt-6-astra'],
+      historicalReasoningEfforts: ['max'],
+      latestTurnModel: null,
+      latestTurnReasoningEffort: null,
+      latestTurnElapsedSeconds: 120,
+      latestTurnEstimatedPercent: 1,
+    }],
+    now,
+  });
+  const astra = row(overview, 'gpt-6-astra', 'max');
+  assert.equal(astra.sourceKind, 'radar-reference');
+  assert.equal(astra.secondsPerPercent, null);
+});
+
+test('explicit latest execution identity wins over the task metadata tag', () => {
+  const overview = buildModelOverview({
+    models: [model('gpt-6-astra', ['max']), model('gpt-5.6-sol', ['xhigh'])],
+    sessions: [{
+      model: 'gpt-6-astra',
+      reasoningEffort: 'max',
+      historicalModels: ['gpt-5.6-sol', 'gpt-6-astra'],
+      historicalReasoningEfforts: ['xhigh', 'max'],
+      latestTurnModel: 'gpt-5.6-sol',
+      latestTurnReasoningEffort: 'xhigh',
+      latestTurnElapsedSeconds: 120,
+      latestTurnEstimatedPercent: 1,
+      children: [],
+    }],
+    now,
+  });
+  const sol = row(overview, 'gpt-5.6-sol', 'xhigh');
+  assert.equal(sol.sourceKind, 'local-average');
+  assert.equal(sol.secondsPerPercent, 120);
+  assert.equal(row(overview, 'gpt-6-astra', 'max').secondsPerPercent, null);
+});
+
+test('own latest and history identity are used for a parent row with children', () => {
+  const overview = buildModelOverview({
+    models: [model('gpt-6-astra', ['max']), model('gpt-5.6-sol', ['xhigh'])],
+    sessions: [{
+      model: 'gpt-6-astra',
+      reasoningEffort: 'max',
+      historicalModels: ['gpt-6-astra', 'gpt-5.6-sol'],
+      historicalReasoningEfforts: ['max', 'xhigh'],
+      ownStatus: 'idle',
+      ownEstimatedPercent: 1,
+      ownAverageSecondsPerPercent: 999,
+      ownObservationSeconds: 120,
+      ownLatestTurnElapsedSeconds: 120,
+      ownLatestTurnEstimatedPercent: 1,
+      ownLatestTurnModel: 'gpt-5.6-sol',
+      ownLatestTurnReasoningEffort: 'xhigh',
+      ownHistoricalModels: ['gpt-5.6-sol'],
+      ownHistoricalReasoningEfforts: ['xhigh'],
+      children: [{
+        model: 'gpt-6-astra',
+        reasoningEffort: 'max',
+      }],
+    }],
+    now,
+  });
+  assert.equal(row(overview, 'gpt-5.6-sol', 'xhigh').secondsPerPercent, 120);
+  assert.equal(row(overview, 'gpt-6-astra', 'max').secondsPerPercent, null);
+});
+
+test('recent local rates use observed duration as the comparable sample weight', () => {
+  const overview = buildModelOverview({
+    models: [model('gpt-6-astra', ['xhigh'])],
+    sessions: [
+      {
+        model: 'gpt-6-astra',
+        reasoningEffort: 'xhigh',
+        latestTurnElapsedSeconds: 10,
+        latestTurnEstimatedPercent: null,
+        latestTurnRateSource: 'recent-token-calibrated',
+        secondsPerPercent: 100,
+        rateObservationSeconds: 10,
+      },
+      {
+        model: 'gpt-6-astra',
+        reasoningEffort: 'xhigh',
+        latestTurnElapsedSeconds: 90,
+        latestTurnEstimatedPercent: null,
+        latestTurnRateSource: 'recent-token-calibrated',
+        secondsPerPercent: 1000,
+        rateObservationSeconds: 90,
+      },
+    ],
+    now,
+  });
+  const astra = row(overview, 'gpt-6-astra', 'xhigh');
+  assert.ok(Math.abs(astra.secondsPerPercent - 100 / 0.19) < 1e-12);
+  assert.equal(astra.sampleCount, 2);
+  assert.equal(astra.observationSeconds, 100);
 });
 
 test('matched own-turn averages replace task lifetime and momentary spike rates', () => {

@@ -49,10 +49,6 @@ function baseModel(value) {
   return suffix ? model.slice(0, -(suffix.length + 1)) : model;
 }
 
-function isSpark(value) {
-  return /(?:^|[-_.])spark(?:$|[-_.])/i.test(text(value) || "");
-}
-
 function keyFor(model, effort) {
   const base = baseModel(model);
   return base ? `${base.toLowerCase()}|${effortOf(effort) || ""}` : null;
@@ -102,12 +98,160 @@ function modelEfforts(model) {
   ];
 }
 
+const EXECUTION_MODEL_FIELDS = [
+  "executionModel",
+  "effectiveModel",
+  "latestTurnModel",
+  "ownLatestTurnModel",
+  "turnModel",
+];
+const EXECUTION_EFFORT_FIELDS = [
+  "executionReasoningEffort",
+  "effectiveReasoningEffort",
+  "latestTurnReasoningEffort",
+  "ownLatestTurnReasoningEffort",
+  "turnReasoningEffort",
+];
+const MODEL_HISTORY_FIELDS = [
+  "executionModels",
+  "historicalModels",
+  "modelHistory",
+];
+const EFFORT_HISTORY_FIELDS = [
+  "executionReasoningEfforts",
+  "historicalReasoningEfforts",
+  "reasoningEffortHistory",
+  "effortHistory",
+];
+
+function modelValue(value) {
+  return text(typeof value === "string" ? value : value?.model);
+}
+
+function effortValue(value) {
+  return effortOf(
+    typeof value === "string" ? value : value?.reasoningEffort ?? value?.effort,
+  );
+}
+
+function valuesForFields(entry, fields, normalize) {
+  const values = [];
+  for (const field of fields) {
+    const value = entry?.[field];
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        const normalized = normalize(item);
+        if (normalized) values.push(normalized);
+      }
+      continue;
+    }
+    const normalized = normalize(value);
+    if (normalized) values.push(normalized);
+  }
+  return [...new Set(values)];
+}
+
+function firstPresentField(entry, fields, normalize) {
+  for (const field of fields) {
+    if (Object.hasOwn(entry || {}, field)) {
+      return { present: true, value: normalize(entry[field]) };
+    }
+  }
+  return { present: false, value: null };
+}
+
+function executionIdentity(entry, hasTurnScope) {
+  const latestModel = firstPresentField(
+    entry,
+    hasTurnScope ? ["latestTurnModel", "ownLatestTurnModel"] : [],
+    modelValue,
+  );
+  const latestEffort = firstPresentField(
+    entry,
+    hasTurnScope
+      ? ["latestTurnReasoningEffort", "ownLatestTurnReasoningEffort"]
+      : [],
+    effortValue,
+  );
+  const genericModel = firstPresentField(
+    entry,
+    EXECUTION_MODEL_FIELDS.filter(
+      (field) => !["latestTurnModel", "ownLatestTurnModel"].includes(field),
+    ),
+    modelValue,
+  );
+  const genericEffort = firstPresentField(
+    entry,
+    EXECUTION_EFFORT_FIELDS.filter(
+      (field) =>
+        ![
+          "latestTurnReasoningEffort",
+          "ownLatestTurnReasoningEffort",
+        ].includes(field),
+    ),
+    effortValue,
+  );
+  const explicitModel = latestModel.present
+    ? latestModel.value
+    : genericModel.present
+      ? genericModel.value
+      : null;
+  const explicitEffort = latestEffort.present
+    ? latestEffort.value
+    : genericEffort.present
+      ? genericEffort.value
+      : null;
+  const explicitModelPresent = latestModel.present || genericModel.present;
+  const explicitEffortPresent = latestEffort.present || genericEffort.present;
+  const modelHistory = valuesForFields(entry, MODEL_HISTORY_FIELDS, modelValue);
+  const effortHistory = valuesForFields(entry, EFFORT_HISTORY_FIELDS, effortValue);
+  const hasEffortHistoryField = EFFORT_HISTORY_FIELDS.some((field) =>
+    Object.hasOwn(entry || {}, field),
+  );
+  const model = explicitModelPresent
+    ? explicitModel
+    : modelHistory.length === 1
+      ? modelHistory[0]
+      : modelHistory.length
+        ? null
+        : text(entry?.model);
+  const effort = explicitEffortPresent
+    ? explicitEffort
+    : effortHistory.length === 1
+      ? effortHistory[0]
+      : effortHistory.length
+        ? null
+        : effortOf(entry?.reasoningEffort ?? entry?.effort);
+  return {
+    model,
+    effort,
+    // A task lifetime rate cannot be assigned to the latest model/effort tag
+    // when its retained execution history contains multiple identities. An
+    // explicit execution identity is the only safe override for that case.
+    ambiguousModel: explicitModelPresent
+      ? !explicitModel
+      : modelHistory.length > 1,
+    ambiguousEffort: explicitEffortPresent
+      ? !explicitEffort
+      : effortHistory.length > 1 ||
+        (modelHistory.length > 0 && !hasEffortHistoryField),
+  };
+}
+
 function ownSessionView(session) {
   const hasOwnFields = [
     "ownEstimatedPercent",
     "ownSecondsPerPercent",
     "ownAverageSecondsPerPercent",
     "ownObservationSeconds",
+    "ownLatestTurnModel",
+  "ownLatestTurnReasoningEffort",
+  "ownExecutionModel",
+  "ownExecutionReasoningEffort",
+  "ownHistoricalModels",
+  "ownHistoricalReasoningEfforts",
+  "ownExecutionModels",
+  "ownExecutionReasoningEfforts",
   ].some((field) => Object.hasOwn(session, field));
   if (!hasOwnFields) return session;
   return {
@@ -121,6 +265,30 @@ function ownSessionView(session) {
       latestTurnElapsedSeconds: session.ownLatestTurnElapsedSeconds,
       latestTurnEstimatedPercent: session.ownLatestTurnEstimatedPercent,
       latestTurnRateSource: session.ownLatestTurnRateSource,
+    } : {}),
+    ...(Object.hasOwn(session, "ownLatestTurnModel") ? {
+      latestTurnModel: session.ownLatestTurnModel,
+    } : {}),
+    ...(Object.hasOwn(session, "ownLatestTurnReasoningEffort") ? {
+      latestTurnReasoningEffort: session.ownLatestTurnReasoningEffort,
+    } : {}),
+    ...(Object.hasOwn(session, "ownExecutionModel") ? {
+      executionModel: session.ownExecutionModel,
+    } : {}),
+    ...(Object.hasOwn(session, "ownExecutionReasoningEffort") ? {
+      executionReasoningEffort: session.ownExecutionReasoningEffort,
+    } : {}),
+    ...(Object.hasOwn(session, "ownHistoricalModels") ? {
+      historicalModels: session.ownHistoricalModels,
+    } : {}),
+    ...(Object.hasOwn(session, "ownHistoricalReasoningEfforts") ? {
+      historicalReasoningEfforts: session.ownHistoricalReasoningEfforts,
+    } : {}),
+    ...(Object.hasOwn(session, "ownExecutionModels") ? {
+      executionModels: session.ownExecutionModels,
+    } : {}),
+    ...(Object.hasOwn(session, "ownExecutionReasoningEfforts") ? {
+      executionReasoningEfforts: session.ownExecutionReasoningEfforts,
     } : {}),
   };
 }
@@ -149,8 +317,6 @@ function localEntries(sessions) {
 function aggregateLocalRates(sessions) {
   const byKey = new Map();
   for (const entry of localEntries(sessions)) {
-    const key = keyFor(entry.model, entry.reasoningEffort ?? entry.effort);
-    if (!key) continue;
     const hasTurnScope = Object.hasOwn(entry, "latestTurnElapsedSeconds");
     const turnSeconds = finite(entry.latestTurnElapsedSeconds);
     const turnPercent = finite(entry.latestTurnEstimatedPercent);
@@ -163,6 +329,11 @@ function aggregateLocalRates(sessions) {
         ? finite(entry.secondsPerPercent) : null
       : finite(entry.secondsPerPercent);
     const average = hasTurnScope ? turnAverage : finite(entry.averageSecondsPerPercent);
+    const identity = executionIdentity(entry, hasTurnScope);
+    if (!identity.model || !identity.effort) continue;
+    if (identity.ambiguousModel || identity.ambiguousEffort) continue;
+    const key = keyFor(identity.model, identity.effort);
+    if (!key) continue;
     const seconds =
       current !== null && current > 0
         ? current
@@ -172,12 +343,16 @@ function aggregateLocalRates(sessions) {
     if (seconds === null) continue;
     const kind = current !== null && current > 0 ? "current" : "average";
     const observation = hasTurnScope
-      ? kind === "average" ? turnSeconds : 5
+      ? kind === "average"
+        ? turnSeconds
+        : finite(entry.rateObservationSeconds) ??
+          finite(entry.latestTurnObservationSeconds) ??
+          turnSeconds
       : finite(entry.observationSeconds);
     const weight = observation !== null && observation > 0 ? observation : 1;
     const item = byKey.get(key) || {
-      model: baseModel(entry.model),
-      effort: effortOf(entry.reasoningEffort ?? entry.effort),
+      model: baseModel(identity.model),
+      effort: effortOf(identity.effort),
       observedSeconds: 0,
       observedQuotaRate: 0,
       observationSeconds: 0,
@@ -227,9 +402,6 @@ function sourceLabelFor(kind, local, radar, available) {
   if (kind === "local-average") {
     return `本机轮次均值 · ${local.sampleCount}个样本`;
   }
-  if (kind === "radar-relative") {
-    return "同模型档位参考推算";
-  }
   if (kind === "radar-reference") {
     return `Codex Radar DeepSWE参考 · n=${radar?.total ?? "?"}`;
   }
@@ -245,8 +417,6 @@ function rateBasisFor(kind, state) {
   if (kind === "local-calibrated")
     return `本机近况：同模型、同档位的近期分摊估算${gap}`;
   if (kind === "local-average") return `本机轮次：本任务自身的轮次耗时 ÷ 同轮额度，按耗时合并样本${gap}`;
-  if (kind === "radar-relative")
-    return `参考推测：只使用同一模型的本机档位样本，按外部基准费用/小时比例推算其他档位；任务负载不同仍可能偏离${gap}`;
   if (kind === "radar-reference")
     return "仅外部参考：同基准 API费用/耗时；缺少订阅额度分母，不能直接换算每1%";
   if (kind === "local-only") return "本机观测估算：没有可比 Radar同基准参考";
@@ -267,9 +437,9 @@ function sortRows(left, right) {
 }
 
 /**
- * Build a model/effort overview without I/O. Radar data is a reference
- * multiplier only within the same base model; a subscription rate requires
- * a matching local model sample. `now` is accepted so callers can keep this function pure and
+ * Build a model/effort overview without I/O. Radar data is an external
+ * reference only; a subscription rate requires a matching local execution
+ * sample. `now` is accepted so callers can keep this function pure and
  * deterministic while choosing their own snapshot timestamp.
  */
 export function buildModelOverview({
@@ -330,22 +500,6 @@ export function buildModelOverview({
     }
   }
 
-  const localWithReference = [...local.values()]
-    .map((item) => ({
-      item,
-      radar: radar.get(keyFor(item.model, item.effort)),
-    }))
-    .filter(
-      ({ item, radar: point }) =>
-        !isSpark(item.model) &&
-        item.quotaPercentPerHour > 0 &&
-        referenceCostPerHour(point) !== null,
-    )
-    .sort(
-      (a, b) =>
-        b.item.observationSeconds - a.item.observationSeconds ||
-        b.item.sampleCount - a.item.sampleCount,
-    );
   const rows = [];
 
   for (const item of availableRows.values()) {
@@ -353,8 +507,6 @@ export function buildModelOverview({
     const point = radar.get(key);
     const referenceCost = referenceCostPerHour(point);
     const localRate = local.get(key);
-    const anchor = localWithReference.find(({ item: candidate }) =>
-      candidate.model.toLowerCase() === item.model.toLowerCase()) || null;
     let sourceKind = "unavailable";
     let secondsPerPercent = null;
     let quotaPercentPerHour = null;
@@ -367,26 +519,6 @@ export function buildModelOverview({
           ? "local-calibrated"
           : "local-average"
         : "local-only";
-    } else if (
-      !isSpark(item.model) &&
-      point &&
-      anchor &&
-      referenceCost !== null
-    ) {
-      const anchorCost = referenceCostPerHour(anchor.radar);
-      const predictedQuotaRate =
-        anchorCost > 0
-          ? (anchor.item.quotaPercentPerHour * referenceCost) / anchorCost
-          : null;
-      if (
-        predictedQuotaRate &&
-        Number.isFinite(predictedQuotaRate) &&
-        predictedQuotaRate > 0
-      ) {
-        quotaPercentPerHour = predictedQuotaRate;
-        secondsPerPercent = 3600 / predictedQuotaRate;
-        sourceKind = "radar-relative";
-      }
     } else if (point) {
       sourceKind = "radar-reference";
     } else if (localRate) {
@@ -403,15 +535,13 @@ export function buildModelOverview({
       sourceKind,
       sourceLabel: sourceLabelFor(sourceKind, localRate, point, item.available),
       referenceCostPerHour: referenceCost,
-      rateBasis: sourceKind === "radar-relative"
-        ? `${rateBasisFor(sourceKind, state)}；基准：${anchor.item.model} / ${anchor.item.effort}`
-        : rateBasisFor(sourceKind, state),
+      rateBasis: rateBasisFor(sourceKind, state),
       calculationKind: localRate
         ? localRate.currentSamples > 0 ? "recent-local" : "turn-average"
-        : sourceKind === "radar-relative" ? "same-model-reference" : "reference-only",
+        : "reference-only",
       sampleCount: localRate?.sampleCount ?? 0,
-      referenceAnchor: sourceKind === "radar-relative"
-        ? { model: anchor.item.model, effort: anchor.item.effort } : null,
+      observationSeconds: localRate?.observationSeconds ?? 0,
+      referenceAnchor: null,
       available: item.available,
     });
   }
@@ -424,6 +554,6 @@ export function buildModelOverview({
     sourceUrl: RADAR_SOURCE_URL,
     updatedAt: new Date(now).toISOString(),
     referenceUpdatedAt: updatedAt,
-    note: "优先显示同模型、同档位的本机轮次均值，样本不足时使用本机近况；无直接样本的档位只做同模型参考推算。不同模型之间不借用额度基准。外部 API 参考费用与订阅百分比不是同一计量，所有额度速率仍为估算。",
+    note: "优先显示同一执行模型、同一推理档位的本机轮次均值或近况；任务历史包含多个执行身份且没有明确轮次身份时不归入任何档位。没有可比本机样本的档位只显示外部参考，不把 Radar API费用/耗时换算为订阅额度百分比。不同模型之间不借用额度基准；本机额度速率仍为估算。",
   };
 }

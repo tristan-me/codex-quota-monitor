@@ -1,8 +1,9 @@
 // Published Codex credit rates are allocation weights, not subscription percentages.
-// Source checked 2026-09-11: https://learn.chatgpt.com/docs/pricing#token-rates
+// Source checked 2026-09-19: https://learn.chatgpt.com/docs/pricing#token-rates
 // Fast mode: https://learn.chatgpt.com/docs/agent-configuration/speed
 export const COST_RATE_VERSION = 'codex-credits-2026-09-11';
 export const COST_RATE_SOURCE = 'https://learn.chatgpt.com/docs/pricing#token-rates';
+export const COST_RATE_CHECKED_AT = '2026-09-19';
 export const TOKEN_CREDIT_RATES = Object.freeze({
   'gpt-6-astra': [250, 25, 1250],
   'gpt-5.6-sol': [100, 10, 500],

@@ -44,7 +44,7 @@
         <div id="sectionNavLinks" class="section-nav-links">
           <a href="#sessionsSection" data-target="sessionsSection" title="会话消耗"><span aria-hidden="true">◉</span><span>会话</span></a>
           <a href="#accountSection" data-target="accountSection" title="账户窗口"><span aria-hidden="true">◌</span><span>账户</span></a>
-          <a href="#trendSection" data-target="trendSection" title="账户余量趋势"><span aria-hidden="true">⌁</span><span>趋势</span></a>
+          <a href="#trendSection" data-target="trendSection" title="累计额度消耗趋势"><span aria-hidden="true">⌁</span><span>消耗趋势</span></a>
           <a href="#modelSection" data-target="modelSection" title="模式总览"><span aria-hidden="true">◆</span><span>模式</span></a>
           <a href="#resetSection" data-target="resetSection" title="重置预测"><span aria-hidden="true">↻</span><span>重置</span></a>
           <a href="#settings" data-target="settings" title="刷新与统计设置"><span aria-hidden="true">⚙</span><span>设置</span></a>
@@ -201,16 +201,74 @@
             <div class="panel-header">
               <div>
                 <p class="section-kicker">QUOTA TREND</p>
-                <h2 id="trend-title">账户余量趋势</h2>
+                <h2 id="trend-title">累计额度消耗趋势</h2>
               </div>
-              <span id="trendLatest" class="panel-header-meta">等待历史样本</span>
+              <span id="trendLatest" class="panel-header-meta">等待消耗样本</span>
             </div>
             <div class="trend-legend" aria-label="趋势线说明">
-              <span><i class="trend-legend-line" aria-hidden="true"></i>已记录</span>
-              <span><i class="trend-legend-line trend-legend-line-missing" aria-hidden="true"></i>未记录或损坏</span>
+              <span><i class="trend-legend-line trend-legend-line-observed" aria-hidden="true"></i>已观察</span>
+              <span><i class="trend-legend-line trend-legend-line-estimated" aria-hidden="true"></i>会话估算</span>
+              <span><i class="trend-legend-line trend-legend-line-unattributed" aria-hidden="true"></i>未归因</span>
             </div>
-            <div id="trendChart" class="trend-chart" role="img" aria-label="账户余量趋势图"></div>
-            <p class="chart-caption">暗线仅作两端已知样本之间的连线参考。</p>
+            <div id="trendChart" class="trend-chart" role="img" aria-label="累计额度消耗趋势图"></div>
+            <p class="chart-caption">三条线显示同一统计窗口内的累计额度消耗；它们不表示账户剩余余额。</p>
+          </section>
+
+          <section id="usageComparisonSection" class="panel usage-comparison-panel panel-wide" aria-labelledby="usage-comparison-title">
+            <div class="panel-header">
+              <div>
+                <p class="section-kicker">COST CHECK</p>
+                <h2 id="usage-comparison-title">理论消耗核对</h2>
+              </div>
+              <span id="usageComparisonStatus" class="panel-header-meta">等待数据</span>
+            </div>
+            <p id="usageComparisonExplanation" class="panel-note">按监控窗口内完整轮次记录汇总 credits；这不是订阅百分比或官方逐任务账单。</p>
+            <div class="usage-comparison-headline" aria-label="价格折算记录摘要">
+              <div class="usage-comparison-stat">
+                <span>记录 credits</span>
+                <strong id="usageComparisonCredits">—</strong>
+              </div>
+              <div class="usage-comparison-stat">
+                <span>完整轮次</span>
+                <strong id="usageComparisonTurns">—</strong>
+              </div>
+              <div class="usage-comparison-stat">
+                <span>总输入 token</span>
+                <strong id="usageComparisonInputTokens">—</strong>
+              </div>
+              <div class="usage-comparison-stat">
+                <span>缓存输入（总输入子集）</span>
+                <strong id="usageComparisonCachedInputTokens">—</strong>
+              </div>
+              <div class="usage-comparison-stat">
+                <span>输出 token</span>
+                <strong id="usageComparisonOutputTokens">—</strong>
+              </div>
+            </div>
+            <p class="usage-comparison-token-note">非缓存输入 = 总输入 − 缓存输入；缓存输入已包含在总输入中，不要再次相加。</p>
+            <div class="usage-comparison-validation">
+              <div class="usage-comparison-validation-header">
+                <strong>独立时段核对</strong>
+                <span id="usageComparisonValidationStatus">等待至少两个独立时段</span>
+              </div>
+              <div class="usage-comparison-validation-grid">
+                <div><span>官方实际额度</span><strong id="usageComparisonActualPercent">—</strong></div>
+                <div><span>理论折算额度</span><strong id="usageComparisonExpectedPercent">—</strong></div>
+                <div><span>差值（理论 − 实际）</span><strong id="usageComparisonDifferencePercent">—</strong></div>
+                <div><span>相对偏差</span><strong id="usageComparisonRelativeErrorPercent">—</strong></div>
+              </div>
+              <p id="usageComparisonCalibrationScope" class="small-note"></p>
+              <p id="usageComparisonEvaluationScope" class="small-note"></p>
+            </div>
+            <div class="usage-comparison-source-row">
+              <span id="usageComparisonWindow">统计窗口待定</span>
+              <span id="usageComparisonPricingMeta">官方定价来源待定</span>
+              <a id="usageComparisonPricingLink" href="#" target="_blank" rel="noopener noreferrer" hidden>打开官方定价 ↗</a>
+            </div>
+            <details id="usageComparisonRowsDetails" class="usage-comparison-details">
+              <summary>按模型 / effort 查看输入、缓存输入、输出与 credits</summary>
+              <div id="usageComparisonRows" class="usage-comparison-rows" role="list" aria-label="模型 credits 与 token 明细"></div>
+            </details>
           </section>
 
           <section id="modelSection" class="panel recommendation-panel panel-wide" aria-labelledby="recommendation-title">
@@ -236,7 +294,7 @@
             <div class="model-calculation-legend" aria-label="模型速率计算方式">
               <span class="method-turn-average">本机轮次均值</span>
               <span class="method-recent-local">本机近况</span>
-              <span class="method-same-model-reference">同模型参考</span>
+              <span class="method-same-model-reference">外部参考（不代表额度速率）</span>
               <span class="method-reference-only">缺少额度样本</span>
             </div>
             <div id="modelOverviewBasis" class="model-overview-basis"><p>来源说明等待数据。</p></div>

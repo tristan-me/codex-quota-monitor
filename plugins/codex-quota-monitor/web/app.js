@@ -954,46 +954,71 @@ import { formatTaskPercent, resetDeadline } from './dashboard-utils.mjs';
     const chart = $('trendChart');
     if (!chart) return;
     chart.replaceChildren();
-    const history = isRecord(snapshot) && Array.isArray(snapshot.history) ? snapshot.history : [];
-    const points = history
+    const history = isRecord(snapshot) && Array.isArray(snapshot.attributionHistory)
+      ? snapshot.attributionHistory : [];
+    let points = history
       .map((point) => ({
         at: parseDate(point && point.at),
-        value: finiteNumber(point && point.remainingPercent),
-        reset: point?.reset === true,
+        observedPercent: finiteNumber(point && point.observedPercent),
+        estimatedPercent: finiteNumber(point && point.estimatedPercent),
+        unattributedPercent: finiteNumber(point && point.unattributedPercent),
+        segment: Number.isInteger(point?.segment) && point.segment >= 0 ? point.segment : 0,
       }))
-      .filter((point) => point.at !== null && point.value !== null && point.value >= 0 && point.value <= 100)
+      .filter((point) => point.at !== null &&
+        point.observedPercent !== null && point.observedPercent >= 0 &&
+        point.estimatedPercent !== null && point.estimatedPercent >= 0 &&
+        point.unattributedPercent !== null && point.unattributedPercent >= 0)
       .sort((a, b) => a.at - b.at);
     if (points.length === 0) {
-      chart.append(textElement('div', 'empty-state chart-empty', '尚无趋势样本 · 完成本地读取后会出现'));
-      setText('trendLatest', '等待历史样本', '等待历史样本');
+      chart.append(textElement('div', 'empty-state chart-empty', '尚无额度消耗样本 · 完成官方额度读取后会出现'));
+      setText('trendLatest', '等待消耗样本', '等待消耗样本');
       return;
+    }
+    const attribution = isRecord(snapshot) && isRecord(snapshot.attribution) ? snapshot.attribution : {};
+    const sinceDate = parseDate(attribution.since);
+    const throughDate = parseDate(attribution.through || snapshot.now);
+    const firstPoint = points[0];
+    if (sinceDate && sinceDate.getTime() < firstPoint.at.getTime()) {
+      points = [{
+        at: sinceDate,
+        observedPercent: 0,
+        estimatedPercent: 0,
+        unattributedPercent: 0,
+        segment: firstPoint.segment,
+      }, ...points];
+    }
+    const lastPoint = points.at(-1);
+    if (throughDate && throughDate.getTime() > lastPoint.at.getTime()) {
+      points = [...points, { ...lastPoint, at: throughDate }];
     }
     const width = Math.max(240, Math.min(680, chart.clientWidth || 680));
     const height = 220;
     const padding = { top: 42, right: 20, bottom: 34, left: 56 };
     const innerWidth = width - padding.left - padding.right;
     const innerHeight = height - padding.top - padding.bottom;
-    const values = points.map((point) => point.value);
-    const rawMin = Math.min(...values);
-    const rawMax = Math.max(...values);
-    const spread = Math.max(1, rawMax - rawMin);
-    const min = Math.max(0, rawMin - spread * 0.12);
-    const max = Math.min(100, rawMax + spread * 0.12);
+    const series = [
+      { key: 'observedPercent', label: '已观察', className: 'trend-line-observed' },
+      { key: 'estimatedPercent', label: '会话估算', className: 'trend-line-estimated' },
+      { key: 'unattributedPercent', label: '未归因', className: 'trend-line-unattributed' },
+    ];
+    const values = points.flatMap((point) => series.map((item) => point[item.key]));
+    const rawMax = Math.max(...values, 0);
+    const max = Math.max(1, rawMax * 1.12);
+    const min = 0;
     const firstAt = points[0].at.getTime();
     const timeSpan = points[points.length - 1].at.getTime() - firstAt;
     const scaleX = (index) => padding.left + (timeSpan <= 0 ? innerWidth / 2
       : (points[index].at.getTime() - firstAt) * innerWidth / timeSpan);
-    const gapMs = Math.max(90_000, getSettings(snapshot).quotaPollSeconds * 3_000);
     const scaleY = (value) => padding.top + ((max - value) / (max - min || 1)) * innerHeight;
 
     const svg = createSvgElement('svg', {
       viewBox: `0 0 ${width} ${height}`,
       role: 'img',
       focusable: 'false',
-      'aria-label': '账户剩余额度随时间变化的趋势图',
+      'aria-label': '累计额度消耗随时间变化的趋势图',
     });
     const title = createSvgElement('title');
-    title.textContent = '账户余量趋势';
+    title.textContent = '累计额度消耗趋势';
     svg.append(title);
     [0, 0.5, 1].forEach((fraction) => {
       const y = padding.top + innerHeight * fraction;
@@ -1013,62 +1038,191 @@ import { formatTaskPercent, resetDeadline } from './dashboard-utils.mjs';
       label.textContent = formatPercent(max - (max - min) * fraction);
       svg.append(label);
     });
-    const pointPosition = (index) => `${scaleX(index).toFixed(2)} ${scaleY(points[index].value).toFixed(2)}`;
-    const gapSegments = [];
-    const pathData = points.map((point, index) => {
-      const gap = index > 0 && point.at - points[index - 1].at > gapMs;
-      if (gap) gapSegments.push(`M ${pointPosition(index - 1)} L ${pointPosition(index)}`);
-      return `${index === 0 || gap ? 'M' : 'L'} ${pointPosition(index)}`;
-    }).join(' ');
-    if (gapSegments.length) {
-      const bridge = createSvgElement('path', {
-        d: gapSegments.join(' '), class: 'trend-gap-line', fill: 'none',
-        'aria-label': '暗线连接缺失或损坏区间两端的已知样本，仅作连线参考',
-      });
-      svg.append(bridge);
-    }
-    svg.append(createSvgElement('path', { d: pathData, class: 'trend-line', fill: 'none' }));
+    const pointPosition = (index, key) => `${scaleX(index).toFixed(2)} ${scaleY(points[index][key]).toFixed(2)}`;
+    const segmentIndices = new Map();
     points.forEach((point, index) => {
-      const circle = createSvgElement('circle', {
-        cx: scaleX(index),
-        cy: scaleY(point.value),
-        r: points.length > 30 ? 1 : 4,
-        class: 'trend-point',
-      });
-      circle.setAttribute('aria-label', `${point.reset ? '额度重置后 ' : ''}${formatPercent(point.value)} ${formatDate(point.at, '')}`.trim());
-      svg.append(circle);
+      const indices = segmentIndices.get(point.segment) || [];
+      indices.push(index);
+      segmentIndices.set(point.segment, indices);
     });
-    const first = points[0];
-    const last = points[points.length - 1];
-
-    // Reserve a value row above the plotting area so every curve, including
-    // steep reset jumps and missing-data bridges, stays clear of the labels.
-    const appendValueLabel = (text, anchor, className, x) => {
-      const label = createSvgElement('text', {
-        x,
-        y: 18,
-        'text-anchor': anchor,
-        class: `trend-value-label ${className}`,
+    series.forEach((item) => {
+      for (const indices of segmentIndices.values()) {
+        const pathData = indices.map((index, position) =>
+          `${position === 0 ? 'M' : 'L'} ${pointPosition(index, item.key)}`).join(' ');
+        svg.append(createSvgElement('path', {
+          d: pathData,
+          class: `trend-line ${item.className}`,
+          fill: 'none',
+          'aria-label': `${item.label}累计额度消耗`,
+        }));
+      }
+    });
+    if (points.length <= 30) {
+      points.forEach((point, index) => {
+        series.forEach((item) => {
+          const circle = createSvgElement('circle', {
+            cx: scaleX(index),
+            cy: scaleY(point[item.key]),
+            r: 3,
+            class: `trend-point ${item.className}`,
+          });
+          circle.setAttribute('aria-label', `${item.label} ${formatPercent(point[item.key])} ${formatDate(point.at, '')}`.trim());
+          svg.append(circle);
+        });
       });
-      label.textContent = text;
-      svg.append(label);
-    };
-
-    if (points.length === 1) {
-      appendValueLabel(`起点 / 最新 ${formatPercent(first.value)}`, 'middle', 'trend-latest-label', padding.left + innerWidth / 2);
-    } else {
-      appendValueLabel(`起点 ${formatPercent(first.value)}`, 'start', 'trend-first-label', padding.left);
-      appendValueLabel(`最新 ${formatPercent(last.value)}`, 'end', 'trend-latest-label', width - padding.right);
     }
+    const last = points.at(-1);
+    series.forEach((item, index) => {
+      const label = createSvgElement('text', {
+        x: width - padding.right,
+        y: 16 + index * 12,
+        'text-anchor': 'end',
+        class: `trend-value-label ${item.className}`,
+      });
+      label.textContent = `${item.label} ${formatPercent(last[item.key])}`;
+      svg.append(label);
+    });
     const firstLabel = createSvgElement('text', { x: padding.left, y: height - 10, class: 'chart-axis-label' });
-    firstLabel.textContent = formatDate(first.at, '开始');
+    firstLabel.textContent = formatDate(points[0].at, '开始');
     svg.append(firstLabel);
     const lastLabel = createSvgElement('text', { x: width - padding.right, y: height - 10, 'text-anchor': 'end', class: 'chart-axis-label' });
     lastLabel.textContent = formatDate(last.at, '现在');
     svg.append(lastLabel);
     chart.append(svg);
-    const firstTimedPoint = points.find((point) => point.at);
-    setText('trendLatest', `统计自 ${formatTrendStart(firstTimedPoint && firstTimedPoint.at)}`, '等待历史样本');
+    setText('trendLatest', `统计自 ${formatTrendStart(points[0].at)} · 累计已观察 ${formatPercent(last.observedPercent)}`, '等待消耗样本');
+  }
+
+  function formatTokenCount(value) {
+    const parsed = finiteNumber(value);
+    if (parsed === null) return '—';
+    try {
+      return Math.round(parsed).toLocaleString('en-US');
+    } catch (_error) {
+      return String(Math.round(parsed));
+    }
+  }
+
+  function safeHttpUrl(value) {
+    const candidate = safeText(value, '');
+    if (!candidate) return null;
+    try {
+      const parsed = new URL(candidate);
+      return parsed.protocol === 'https:' || parsed.protocol === 'http:' ? parsed.href : null;
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  function comparisonRangeText(recorded) {
+    const since = parseDate(recorded?.since);
+    const until = parseDate(recorded?.until);
+    if (!since && !until) return '统计窗口待定';
+    return `记录窗口 ${formatDate(since, '开始待定')} → ${formatDate(until, '现在')}`;
+  }
+
+  function comparisonValue(value, formatter = formatCredits) {
+    return value === null || value === undefined ? '—' : formatter(value);
+  }
+
+  function renderUsageComparison(snapshot) {
+    const comparison = isRecord(snapshot) && isRecord(snapshot.usageComparison)
+      ? snapshot.usageComparison : {};
+    const recorded = isRecord(comparison.recorded) ? comparison.recorded : {};
+    const pricing = isRecord(comparison.pricing) ? comparison.pricing : {};
+    const validation = isRecord(comparison.validation) ? comparison.validation : {};
+    const calibration = isRecord(validation.calibration) ? validation.calibration : {};
+    const evaluation = isRecord(validation.evaluation) ? validation.evaluation : {};
+    const status = safeText(validation.status, 'insufficient-independent-samples');
+    const ready = status === 'ready';
+    setText('usageComparisonStatus', ready ? '独立核对可用' : '独立样本不足', '等待数据');
+    setText('usageComparisonExplanation', safeText(comparison.explanation,
+      '按监控窗口内完整轮次记录汇总 credits；这不是订阅百分比或官方逐任务账单。'),
+    '按监控窗口内完整轮次记录汇总 credits；这不是订阅百分比或官方逐任务账单。');
+    setText('usageComparisonCredits', comparisonValue(recorded.credits));
+    setText('usageComparisonTurns', comparisonValue(recorded.turnCount, formatTokenCount));
+    setText('usageComparisonInputTokens', comparisonValue(recorded.inputTokens, formatTokenCount));
+    setText('usageComparisonCachedInputTokens', comparisonValue(recorded.cachedInputTokens, formatTokenCount));
+    setText('usageComparisonOutputTokens', comparisonValue(recorded.outputTokens, formatTokenCount));
+
+    setText('usageComparisonValidationStatus', ready
+      ? `校准 ${formatTokenCount(calibration.sampleCount)} 个 · 核对 ${formatTokenCount(evaluation.sampleCount)} 个`
+      : '等待至少两个不同时间点的独立样本', '等待至少两个独立时段');
+    setText('usageComparisonActualPercent', ready
+      ? formatPercent(evaluation.actualPercent) : '待样本');
+    setText('usageComparisonExpectedPercent', ready
+      ? formatPercent(evaluation.expectedPercent) : '待样本');
+    setText('usageComparisonDifferencePercent', ready
+      ? `${evaluation.differencePercent > 0 ? '+' : ''}${formatCredits(evaluation.differencePercent)} 个百分点` : '待样本');
+    setText('usageComparisonRelativeErrorPercent', ready
+      ? formatPercent(evaluation.relativeErrorPercent) : '待样本');
+    setText('usageComparisonCalibrationScope', ready
+      ? `校准样本：${comparisonRangeText(calibration)} · ${formatCredits(calibration.credits)} credits / ${formatPercent(calibration.actualPercent)}` : '', '');
+    setText('usageComparisonEvaluationScope', ready
+      ? `核对样本：${comparisonRangeText(evaluation)} · ${formatCredits(evaluation.credits)} credits；已排除 ${formatTokenCount(validation.excludedSampleCount)} 个不适用样本。` : '', '');
+
+    const pricingMeta = [
+      safeText(pricing.unit, 'credits'),
+      pricing.checkedAt ? `核对 ${safeText(pricing.checkedAt)}` : '',
+      safeText(pricing.formula, ''),
+    ].filter(Boolean).join(' · ');
+    setText('usageComparisonPricingMeta', pricingMeta || '官方定价来源待定', '官方定价来源待定');
+    const pricingLink = $('usageComparisonPricingLink');
+    const pricingUrl = safeHttpUrl(pricing.source);
+    if (pricingLink) {
+      if (pricingUrl) {
+        pricingLink.href = pricingUrl;
+        pricingLink.hidden = false;
+      } else {
+        pricingLink.removeAttribute('href');
+        pricingLink.hidden = true;
+      }
+    }
+    const excludedTurns = finiteNumber(recorded.excludedTurnCount);
+    const partialTurns = finiteNumber(recorded.partialTurnCount);
+    const coverageNote = excludedTurns !== null
+      ? ` · 未计入的已知轮次 ${formatTokenCount(excludedTurns)}${partialTurns !== null ? `（其中部分记录 ${formatTokenCount(partialTurns)}）` : ''}`
+      : '';
+    setText('usageComparisonWindow', `${comparisonRangeText(recorded)}${coverageNote}`, '统计窗口待定');
+    const rows = $('usageComparisonRows');
+    if (!rows) return;
+    const expanded = new Set([...rows.querySelectorAll('details[open]')]
+      .map(row => row.dataset.usageKey));
+    rows.replaceChildren();
+    const modelRows = Array.isArray(recorded.modelRows)
+      ? recorded.modelRows.filter((row) => isRecord(row)) : [];
+    if (!modelRows.length) {
+      rows.append(textElement('div', 'empty-state usage-comparison-empty', '暂无完整轮次明细'));
+      return;
+    }
+    modelRows.forEach((row) => {
+      const details = document.createElement('details');
+      details.className = 'usage-comparison-row';
+      const summary = document.createElement('summary');
+      const model = safeText(row.model, '模型未提供');
+      const effort = safeText(row.reasoningEffort, 'effort 未提供');
+      const tier = safeText(row.serviceTier, 'service tier 未提供');
+      details.dataset.usageKey = JSON.stringify([model, effort, tier]);
+      details.open = expanded.has(details.dataset.usageKey);
+      summary.textContent = `${model} · ${effort} · ${tier}`;
+      details.append(summary);
+      const values = document.createElement('div');
+      values.className = 'usage-comparison-row-values';
+      const fields = [
+        ['总输入 token', row.inputTokens, formatTokenCount],
+        ['缓存输入（总输入子集）', row.cachedInputTokens, formatTokenCount],
+        ['输出 token', row.outputTokens, formatTokenCount],
+        ['credits', row.credits, formatCredits],
+        ['完整轮次', row.turnCount, formatTokenCount],
+      ];
+      fields.forEach(([label, value, formatter]) => {
+        const item = document.createElement('div');
+        item.append(textElement('span', '', label));
+        item.append(textElement('strong', '', comparisonValue(value, formatter)));
+        values.append(item);
+      });
+      details.append(values);
+      rows.append(details);
+    });
   }
 
   function renderModelOverview(snapshot) {
@@ -1098,13 +1252,13 @@ import { formatTaskPercent, resetDeadline } from './dashboard-utils.mjs';
     const methods = {
       'turn-average': { label: '本机轮次均值', className: 'method-turn-average' },
       'recent-local': { label: '本机近况', className: 'method-recent-local' },
-      'same-model-reference': { label: '同模型参考推算', className: 'method-same-model-reference' },
+      'same-model-reference': { label: '外部参考（不代表额度速率）', className: 'method-same-model-reference' },
       'reference-only': { label: '缺少额度样本', className: 'method-reference-only' },
     };
     const methodFor = (row) => methods[row.calculationKind] ||
       methods[row.sourceKind === 'local-average' ? 'turn-average'
         : ['local-calibrated', 'local-only'].includes(row.sourceKind) ? 'recent-local'
-          : row.sourceKind === 'radar-relative' ? 'same-model-reference' : 'reference-only'];
+          : 'reference-only'];
     const effortRank = (row) => {
       const effort = safeText(row.effort || row.reasoningEffort, '').toLowerCase();
       const index = EFFORT_ORDER.indexOf(effort);
@@ -1147,7 +1301,7 @@ import { formatTaskPercent, resetDeadline } from './dashboard-utils.mjs';
     if (list) {
       list.replaceChildren();
       if (!activeGroup) {
-        list.append(textElement('div', 'empty-state model-overview-empty', '暂无模型速率数据 · 等待账户和观测样本'));
+        list.append(textElement('div', 'empty-state model-overview-empty', '暂无模型观测或外部参考数据'));
       } else {
         const sourceGroups = new Map();
         activeGroup.rows.forEach((row) => {
@@ -1156,7 +1310,7 @@ import { formatTaskPercent, resetDeadline } from './dashboard-utils.mjs';
           const sourceLabel = safeText(row.sourceLabel, '来源待定');
           const basis = safeText(row.rateBasis, '');
           let phrase = sourceLabel;
-          if (!phrase || phrase === '来源待定') phrase = kind.includes('radar') || kind.includes('reference') ? 'Codex Radar参考推算' : kind.includes('local') || kind.includes('observ') ? '本机观测估算' : '来源待定';
+          if (!phrase || phrase === '来源待定') phrase = kind.includes('radar') || kind.includes('reference') ? '外部参考（不代表额度速率）' : kind.includes('local') || kind.includes('observ') ? '本机观测估算' : '来源待定';
           if (basis && basis !== phrase) phrase = `${phrase}（${basis}）`;
           const key = phrase;
           const record = sourceGroups.get(key) || { phrase, efforts: [], method: methodFor(row) };
@@ -1196,6 +1350,10 @@ import { formatTaskPercent, resetDeadline } from './dashboard-utils.mjs';
             metrics.append(metric);
           });
           item.append(metrics);
+          if (finiteNumber(row.sampleCount) > 0) {
+            item.append(textElement('p', 'small-note',
+              `${row.sampleCount === 1 ? '仅 1 个样本' : `${row.sampleCount} 个样本`} · 已记录执行 ${formatDuration(row.observationSeconds, '时长待定')}`));
+          }
           list.append(item);
         });
       }
@@ -1518,6 +1676,7 @@ import { formatTaskPercent, resetDeadline } from './dashboard-utils.mjs';
     renderAccountWindows(safeSnapshot);
     renderAttribution(safeSnapshot);
     renderTrend(safeSnapshot);
+    renderUsageComparison(safeSnapshot);
     renderRecommendation(safeSnapshot);
     renderReset(safeSnapshot);
     renderResetRadar(safeSnapshot);

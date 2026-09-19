@@ -7,6 +7,8 @@ import { CodexAppServerClient } from "./app-server-client.mjs";
 import { Estimator, accountDisplay, mainWindow } from "./metrics.mjs";
 import { recommend } from "./recommend.mjs";
 import { buildModelOverview } from "./model-overview.mjs";
+import { buildUsageComparison } from "./usage-comparison.mjs";
+import { buildAttributionTrend } from "./attribution-trend.mjs";
 import {
   buildResetRadar,
   fetchResetReference,
@@ -614,6 +616,10 @@ export class Collector {
       settings: this.settings,
       account: { ...this.account, stale },
       sessions,
+      attributionHistory: buildAttributionTrend(attribution.events, {
+        since: attribution.since, through: now, windowLabel: window?.label,
+      }).history,
+      usageComparison: buildUsageComparison({ state, now, since: attribution.since }),
       attribution: {
         observedPercent: attribution.observedPercent,
         attributedPercent: attribution.attributedPercent,

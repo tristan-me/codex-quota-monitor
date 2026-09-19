@@ -4,8 +4,10 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import { buildAttributionTrend } from "../server/attribution-trend.mjs";
 import { buildModelOverview } from "../server/model-overview.mjs";
 import { startService } from "../server/service.mjs";
+import { COST_RATE_CHECKED_AT, COST_RATE_SOURCE, usageCredits } from "../server/usage-cost.mjs";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
@@ -337,6 +339,115 @@ function syntheticState(now, sessions) {
   };
 }
 
+function syntheticAttribution(sampledAt, windowLabel) {
+  const since = sampledAt - 75 * MINUTE_MS;
+  const events = [
+    { id: "demo-quota-sample-1", at: sampledAt - 64 * MINUTE_MS, percent: 0.8,
+      attributedPercent: 0.25, unattributedPercent: 0.55,
+      quotaIdentity: "demo:weekly:initial", coverage: "official-quota-sample" },
+    { id: "demo-quota-sample-2", at: sampledAt - 52 * MINUTE_MS, percent: 1.1,
+      attributedPercent: 0.30, unattributedPercent: 0.80,
+      quotaIdentity: "demo:weekly:initial", coverage: "official-quota-sample" },
+    { id: "demo-quota-sample-3", at: sampledAt - 38 * MINUTE_MS, percent: 1.3,
+      attributedPercent: 0.35, unattributedPercent: 0.95,
+      quotaIdentity: "demo:weekly:initial", coverage: "official-quota-sample" },
+    { id: "demo-quota-sample-4", at: sampledAt - 28 * MINUTE_MS, percent: 0.7,
+      attributedPercent: 0.20, unattributedPercent: 0.50,
+      quotaIdentity: "demo:weekly:after-reset", coverage: "official-quota-sample" },
+    { id: "demo-quota-sample-5", at: sampledAt - 8 * MINUTE_MS, percent: 1.1,
+      attributedPercent: 0.22, unattributedPercent: 0.88,
+      quotaIdentity: "demo:weekly:after-reset", coverage: "official-quota-sample" },
+  ];
+  return {
+    since,
+    through: sampledAt,
+    trend: buildAttributionTrend(events, {
+      since,
+      through: sampledAt,
+      windowLabel,
+    }),
+  };
+}
+
+function usageRow({ model, reasoningEffort, serviceTier = "standard", inputTokens,
+  cachedInputTokens, outputTokens, turnCount }) {
+  const usage = { inputTokens, cachedInputTokens, outputTokens,
+    totalTokens: inputTokens + outputTokens };
+  const credits = usageCredits(usage, model, serviceTier);
+  if (!Number.isFinite(credits)) throw new Error(`Synthetic pricing fixture is unsupported: ${model}`);
+  return { model, reasoningEffort, serviceTier, credits, inputTokens,
+    cachedInputTokens, outputTokens, turnCount };
+}
+
+function syntheticUsageComparison(sampledAt, since) {
+  const modelRows = [
+    usageRow({ model: "gpt-5.6-terra", reasoningEffort: "medium",
+      inputTokens: 220_000, cachedInputTokens: 80_000, outputTokens: 50_000, turnCount: 3 }),
+    usageRow({ model: "gpt-5.6-luna", reasoningEffort: "high",
+      inputTokens: 160_000, cachedInputTokens: 60_000, outputTokens: 30_000, turnCount: 4 }),
+    usageRow({ model: "gpt-5.6-sol", reasoningEffort: "low",
+      inputTokens: 90_000, cachedInputTokens: 20_000, outputTokens: 18_000, turnCount: 2 }),
+  ];
+  const recorded = modelRows.reduce((total, row) => ({
+    credits: total.credits + row.credits,
+    inputTokens: total.inputTokens + row.inputTokens,
+    cachedInputTokens: total.cachedInputTokens + row.cachedInputTokens,
+    outputTokens: total.outputTokens + row.outputTokens,
+    turnCount: total.turnCount + row.turnCount,
+  }), { credits: 0, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, turnCount: 0 });
+  const calibrationSince = sampledAt - 65 * MINUTE_MS;
+  const calibrationUntil = sampledAt - 42 * MINUTE_MS;
+  const evaluationSince = sampledAt - 36 * MINUTE_MS;
+  const evaluationUntil = sampledAt - 8 * MINUTE_MS;
+  const calibrationCredits = 12;
+  const calibrationActualPercent = 1.5;
+  const percentPerCredit = calibrationActualPercent / calibrationCredits;
+  const evaluationCredits = 20;
+  const evaluationActualPercent = 2.4;
+  const evaluationExpectedPercent = evaluationCredits * percentPerCredit;
+  const differencePercent = evaluationExpectedPercent - evaluationActualPercent;
+  return {
+    pricing: {
+      source: COST_RATE_SOURCE,
+      checkedAt: COST_RATE_CHECKED_AT,
+      unit: "credits",
+      formula: "非缓存输入 × 输入单价 + 缓存输入 × 缓存单价 + 输出 × 输出单价；单价按每百万 token，Fast 另乘倍率。",
+    },
+    recorded: {
+      ...recorded,
+      since,
+      until: sampledAt,
+      partialTurnCount: 1,
+      excludedTurnCount: 2,
+      modelRows,
+      scope: "complete-turns-in-monitoring-window",
+    },
+    validation: {
+      status: "ready",
+      calibration: {
+        since: calibrationSince,
+        until: calibrationUntil,
+        credits: calibrationCredits,
+        actualPercent: calibrationActualPercent,
+        sampleCount: 2,
+        percentPerCredit,
+      },
+      evaluation: {
+        since: evaluationSince,
+        until: evaluationUntil,
+        credits: evaluationCredits,
+        actualPercent: evaluationActualPercent,
+        expectedPercent: evaluationExpectedPercent,
+        differencePercent,
+        relativeErrorPercent: differencePercent / evaluationActualPercent * 100,
+        sampleCount: 2,
+      },
+      excludedSampleCount: 1,
+    },
+    explanation: "合成 README 演示：credits 按公开 token 定价计算，不等于订阅额度百分比；前半段样本用于标定，后半段独立样本用于核对。",
+  };
+}
+
 /**
  * Return a deterministic, local-only snapshot for README screenshots.
  * Every account, thread, token count, rate and reset value is synthetic.
@@ -352,6 +463,10 @@ export function createReadmeSnapshot({ now = Date.now(), resetRadar = null } = {
     at: sampledAt - (historyValues.length - index - 1) * 15 * MINUTE_MS,
     remainingPercent,
   }));
+  const attributionWindowLabel = "Codex · 周额度（合成）";
+  const attributionData = syntheticAttribution(sampledAt, attributionWindowLabel);
+  const attribution = attributionData.trend;
+  const usageComparison = syntheticUsageComparison(sampledAt, attributionData.since);
   const radar = syntheticResetRadar(sampledAt, resetRadar);
   const modelOverview = buildModelOverview({
     models,
@@ -414,13 +529,23 @@ export function createReadmeSnapshot({ now = Date.now(), resetRadar = null } = {
       stale: false,
     },
     sessions,
+    attributionHistory: attribution.history,
+    usageComparison,
     attribution: {
-      observedPercent: 5.000,
-      estimatedPercent: sessions.reduce((sum,item)=>sum+item.estimatedPercent,0),
+      observedPercent: attribution.observedPercent,
+      attributedPercent: attribution.estimatedPercent,
+      estimatedPercent: attribution.estimatedPercent,
+      estimatedPercentCoverage: attribution.coverage,
+      projectedTaskPercent: sessions.reduce((sum,item)=>sum+item.estimatedPercent,0),
+      projectedTaskScope: "all-known",
       calibrated: true,
-      unattributedPercent: 5-sessions.reduce((sum,item)=>sum+item.estimatedPercent,0),
-      windowLabel: "Codex · 周额度（合成）",
-      since: sampledAt - 75 * MINUTE_MS,
+      unattributedPercent: attribution.unattributedPercent,
+      windowLabel: attributionWindowLabel,
+      since: attribution.since,
+      through: attribution.through,
+      sampleCount: attribution.sampleCount,
+      excludedIncompleteHistory: false,
+      startReason: "official-samples",
       assumption: "合成演示：会话归因数字不来自任何订阅账户或真实任务。",
     },
     cost: {

@@ -28,8 +28,37 @@ test("README preview is deterministic, synthetic, and complete for screenshot da
   assert.equal(first.cost.localReadsPerHour, 720);
   assert.equal(first.history.length, 8);
   assert.ok(first.history.every((point, index, points) => index === 0 || point.at > points[index - 1].at));
+  assert.ok(first.attributionHistory.length >= 3);
+  assert.ok(first.attributionHistory.every((point, index, points) =>
+    index === 0 || point.at > points[index - 1].at));
+  const attributionEnd = first.attributionHistory.at(-1);
+  assert.equal(attributionEnd.observedPercent, first.attribution.observedPercent);
+  assert.equal(attributionEnd.estimatedPercent, first.attribution.estimatedPercent);
+  assert.equal(attributionEnd.unattributedPercent, first.attribution.unattributedPercent);
+  assert.equal(first.usageComparison.recorded.since, first.attribution.since);
+  assert.equal(first.usageComparison.recorded.until, first.now);
   assert.equal(first.resetRadar.source, "https://codex-reset.com/zh/");
   assert.match(first.resetRadar.note, /合成演示/);
+});
+
+test("preview attribution and theory comparison use reconciled synthetic totals", () => {
+  const snapshot = createReadmeSnapshot({ now: NOW });
+  const { recorded, pricing, validation } = snapshot.usageComparison;
+  const modelRows = recorded.modelRows;
+  assert.ok(modelRows.length >= 2);
+  assert.ok(Math.abs(modelRows.reduce((sum, row) => sum + row.credits, 0) - recorded.credits) < 1e-12);
+  assert.equal(modelRows.reduce((sum, row) => sum + row.inputTokens, 0), recorded.inputTokens);
+  assert.equal(modelRows.reduce((sum, row) => sum + row.cachedInputTokens, 0), recorded.cachedInputTokens);
+  assert.equal(modelRows.reduce((sum, row) => sum + row.outputTokens, 0), recorded.outputTokens);
+  assert.equal(modelRows.reduce((sum, row) => sum + row.turnCount, 0), recorded.turnCount);
+  assert.ok(modelRows.every((row) => row.cachedInputTokens <= row.inputTokens));
+  assert.equal(pricing.unit, "credits");
+  assert.match(pricing.source, /^https:\/\//);
+  assert.match(pricing.formula, /非缓存输入/);
+  assert.equal(validation.status, "ready");
+  assert.ok(validation.calibration.percentPerCredit > 0);
+  assert.ok(validation.evaluation.expectedPercent > 0);
+  assert.ok(Number.isFinite(validation.evaluation.relativeErrorPercent));
 });
 
 test("preview sessions have safe demo IDs, expandable children, and rate fields", () => {
@@ -91,9 +120,10 @@ test("model overview covers current synthetic GPT families and public references
   for (const effort of ["ultra", "max", "xhigh", "high", "medium", "low"]) assert.ok(astra.has(effort));
   for (const effort of ["max", "xhigh", "high", "medium", "low"]) assert.ok(luna.has(effort));
   assert.ok(rows.some((row) => row.sourceKind === "local-average" && row.calculationKind === "turn-average"));
-  assert.ok(rows.some((row) => row.sourceKind === "radar-relative"));
+  assert.ok(rows.some((row) => row.sourceKind === "radar-reference" && row.secondsPerPercent === null));
+  assert.ok(rows.every((row) => row.sourceKind !== "radar-relative"));
   assert.equal(snapshot.modelOverview.sourceUrl, "https://api.codexradar.com/api/v1/intelligence-efficiency");
-  assert.match(snapshot.modelOverview.note, /订阅百分比/);
+  assert.match(snapshot.modelOverview.note, /订阅.*百分比/);
 });
 
 test("preview collector is an isolated read-only stub", async () => {

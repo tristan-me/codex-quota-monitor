@@ -54,11 +54,25 @@ test('per-turn recorded costs fill a missed short turn without inventing an acco
   assert.equal(result.totalEstimatedPercent,0.06);
   assert.equal(result.latestTurnEstimatedPercent,0.01);
   assert.equal(result.latestTurnSecondsPerPercent,1000);
+  assert.equal(result.ownLatestTurnModel,'gpt-5.6-luna');
+  assert.equal(result.ownLatestTurnReasoningEffort,'max');
   assert.equal(result.averageSecondsPerPercent,1000);
   assert.equal(result.estimateSource,'model-token-cost-calibrated');
   assert.equal(e.state.rollingQuotaEvents.length,0);
   const restored=new Estimator(JSON.parse(JSON.stringify(e.state)));
   assert.equal(restored.sessions([],now+1000)[0].totalEstimatedPercent,0.06);
+});
+
+test('overview identity follows the priced latest execution instead of current task settings',()=>{
+  const e=new Estimator(saved());
+  const latest={...turn('actual',now-10000,now,1,'gpt-6-astra'),reasoningEffort:'high'};
+  const row=thread('task',[latest],{model:'gpt-5.6-luna',reasoningEffort:'low'});
+  e.local([row],now);
+  const result=e.sessions([row],now)[0];
+  assert.equal(result.model,'gpt-5.6-luna');
+  assert.equal(result.ownLatestTurnModel,'gpt-6-astra');
+  assert.equal(result.ownLatestTurnReasoningEffort,'high');
+  assert.deepEqual(result.ownHistoricalReasoningEfforts,['high']);
 });
 
 test('new reconstruction replaces overlapping old estimates and preserves disjoint history',()=>{
