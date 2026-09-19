@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="dark">
-    <meta name="description" content="Codex 会话额度和速率的本地估算仪表板">
+    <meta name="description" content="查看 Codex 账号额度与各 API 的本地任务 token 用量">
     <title>Codex 额度监控器</title>
     <link rel="stylesheet" href="/style.css">
     <script type="module" src="/app.js"></script>
@@ -30,6 +30,23 @@
         </div>
       </header>
 
+      <section id="providerBar" class="provider-bar" aria-label="监控来源">
+        <div class="provider-control">
+          <label class="field-label" for="providerSelect">查看用量</label>
+          <select id="providerSelect" class="select-control provider-select" aria-describedby="providerHelp" disabled>
+            <option value="openai">Codex 账号</option>
+          </select>
+        </div>
+        <div class="provider-context">
+          <div class="provider-context-heading">
+            <strong id="selectedProviderBadge" class="provider-badge">正在查看：Codex 账号</strong>
+            <span id="activeProviderLabel" class="provider-active" hidden></span>
+            <span id="providerSelectionStatus" class="provider-selection-status" role="status" aria-live="polite"></span>
+          </div>
+          <p id="providerHelp" class="field-help">这里只切换监控视图。自定义 API 请在 Codex 桌面端配置，已配置的服务会自动出现在列表中。</p>
+        </div>
+      </section>
+
       <div id="modeBanner" class="mode-banner mode-unknown" role="status" aria-live="polite">
         <span class="mode-banner-mark" aria-hidden="true"></span>
         <span class="mode-banner-copy">
@@ -42,11 +59,11 @@
       <nav id="sectionNav" class="section-nav" aria-label="页面目录">
         <button id="sectionNavToggle" class="section-nav-toggle" type="button" aria-expanded="false" aria-controls="sectionNavLinks" aria-label="展开页面目录">☰</button>
         <div id="sectionNavLinks" class="section-nav-links">
-          <a href="#sessionsSection" data-target="sessionsSection" title="会话消耗"><span aria-hidden="true">◉</span><span>会话</span></a>
-          <a href="#accountSection" data-target="accountSection" title="账户窗口"><span aria-hidden="true">◌</span><span>账户</span></a>
-          <a href="#trendSection" data-target="trendSection" title="累计额度消耗趋势"><span aria-hidden="true">⌁</span><span>消耗趋势</span></a>
-          <a href="#modelSection" data-target="modelSection" title="模式总览"><span aria-hidden="true">◆</span><span>模式</span></a>
-          <a href="#resetSection" data-target="resetSection" title="重置预测"><span aria-hidden="true">↻</span><span>重置</span></a>
+          <a id="sessionsNavLink" href="#sessionsSection" data-target="sessionsSection" title="会话消耗"><span aria-hidden="true">◉</span><span id="sessionsNavLabel">会话</span></a>
+          <a href="#accountSection" data-target="accountSection" data-provider-view="codex" title="账户窗口"><span aria-hidden="true">◌</span><span>账户</span></a>
+          <a href="#trendSection" data-target="trendSection" data-provider-view="codex" title="累计额度消耗趋势"><span aria-hidden="true">⌁</span><span>消耗趋势</span></a>
+          <a href="#modelSection" data-target="modelSection" data-provider-view="codex" title="模式总览"><span aria-hidden="true">◆</span><span>模式</span></a>
+          <a href="#resetSection" data-target="resetSection" data-provider-view="codex" title="重置预测"><span aria-hidden="true">↻</span><span>重置</span></a>
           <a href="#settings" data-target="settings" title="刷新与统计设置"><span aria-hidden="true">⚙</span><span>设置</span></a>
           <a href="#diagnosticsSection" data-target="diagnosticsSection" title="诊断"><span aria-hidden="true">✓</span><span>诊断</span></a>
         </div>
@@ -70,14 +87,15 @@
 
         <section id="hero" class="hero full-dashboard data-card" aria-labelledby="overview-title">
           <div class="hero-copy">
-            <p class="section-kicker">额度观察 · 本地估算</p>
+            <p id="overviewKicker" class="section-kicker">额度观察 · 本地估算</p>
             <h1 id="overview-title">看见每个会话的消耗节奏</h1>
             <p class="hero-note">
               <span class="note-mark" aria-hidden="true">i</span>
-              本插件监控期不消耗codex额度。
+              <span id="monitorUsageNote">本插件监控期不消耗codex额度。</span>
             </p>
+            <p id="apiUsageRange" class="api-usage-range" data-provider-view="api" hidden></p>
           </div>
-          <div class="hero-metrics" aria-label="账户官方指标与会话状态">
+          <div class="hero-metrics" data-provider-view="codex" aria-label="账户官方指标与会话状态">
             <article class="metric-card metric-card-accent">
               <span id="accountRemainingLabel" class="metric-label">账户剩余（官方）</span>
               <strong id="accountRemainingValue" class="metric-value">—</strong>
@@ -99,6 +117,29 @@
               <span id="unknownSessionDetail" class="metric-detail">等待快照</span>
             </article>
           </div>
+          <div id="apiHeroMetrics" class="hero-metrics api-hero-metrics" data-provider-view="api" aria-label="API token 用量" hidden>
+            <article class="metric-card">
+              <span class="metric-label">已记录总输入 token</span>
+              <strong id="apiInputTokens" class="metric-value">—</strong>
+              <span class="metric-detail">包含缓存输入</span>
+            </article>
+            <article class="metric-card">
+              <span class="metric-label">已记录缓存输入 token</span>
+              <strong id="apiCachedInputTokens" class="metric-value">—</strong>
+              <span class="metric-detail">已包含在总输入中</span>
+            </article>
+            <article class="metric-card">
+              <span class="metric-label">已记录输出 token</span>
+              <strong id="apiOutputTokens" class="metric-value">—</strong>
+              <span class="metric-detail">本地已记录的输出用量</span>
+            </article>
+            <article class="metric-card metric-card-accent">
+              <span class="metric-label">已记录合计 token</span>
+              <strong id="apiTotalTokens" class="metric-value">—</strong>
+              <span class="metric-detail">包含已记录的未分类 token</span>
+            </article>
+            <p id="apiTokenCoverage" class="api-token-coverage" role="status" aria-live="polite">等待可读用量记录</p>
+          </div>
         </section>
 
         <div id="offlinePanel" class="offline-panel full-dashboard" role="alert" hidden>
@@ -114,14 +155,14 @@
           <section id="sessionsSection" class="panel sessions-panel panel-wide" aria-labelledby="sessions-title">
             <div class="panel-header">
               <div>
-                <p class="section-kicker">LIVE SESSIONS</p>
+                <p id="sessionsKicker" class="section-kicker">LIVE SESSIONS</p>
                 <h2 id="sessions-title">会话消耗（已知记录估算）</h2>
               </div>
               <span id="sessionRefreshHint" class="panel-header-meta">每 5 秒更新</span>
             </div>
-            <p class="panel-note">累计展示全部本机可读和已记录的任务，不受账户统计窗口限制。历史未记录或不可读的部分无法补齐；额度优先按各轮模型、缓存输入和输出用量校准，旧记录仍可能不完整。平均值为已知总耗时除以已知额度；二者覆盖范围不同时，仅作粗略参考。父任务包含子任务，最近一次包含本轮启动的子任务。运行中优先使用最近 5 秒的估算，缺少近期样本时参考本轮或历史均速；等待期间不代表持续推理。额度与速度为估算，本机执行记录可能不完整。</p>
+            <p id="sessionsNote" class="panel-note">累计展示全部本机可读和已记录的任务，不受账户统计窗口限制。历史未记录或不可读的部分无法补齐；额度优先按各轮模型、缓存输入和输出用量校准，旧记录仍可能不完整。平均值为已知总耗时除以已知额度；二者覆盖范围不同时，仅作粗略参考。父任务包含子任务，最近一次包含本轮启动的子任务。运行中优先使用最近 5 秒的估算，缺少近期样本时参考本轮或历史均速；等待期间不代表持续推理。额度与速度为估算，本机执行记录可能不完整。</p>
             <div class="session-tools">
-              <label class="session-search-label" for="sessionSearch">筛选会话</label>
+              <label id="sessionSearchLabel" class="session-search-label" for="sessionSearch">筛选会话</label>
               <div class="session-search-control">
                 <input id="sessionSearch" type="search" autocomplete="off" spellcheck="false" placeholder="标题关键词或完整 ID；空格/逗号分隔">
                 <button id="clearSessionSearch" class="button button-small button-quiet" type="button">清除</button>
@@ -133,7 +174,7 @@
               <span id="sessionSummaryText">正在等待会话快照</span>
             </div>
             <div id="sessionList" class="session-list" role="list" aria-label="Codex 会话列表"></div>
-            <div class="session-pagination" aria-label="会话分页">
+            <div id="sessionPagination" class="session-pagination" aria-label="会话分页">
               <button id="sessionPrev" class="button button-small button-quiet" type="button">上一页</button>
               <span id="sessionPageInfo" class="session-page-info">第 1 页</span>
               <button id="sessionNext" class="button button-small button-quiet" type="button">下一页</button>
@@ -142,7 +183,7 @@
             </div>
           </section>
 
-          <section id="accountSection" class="panel account-panel" aria-labelledby="account-title">
+          <section id="accountSection" class="panel account-panel" data-provider-view="codex" aria-labelledby="account-title">
             <div class="panel-header">
               <div>
                 <p class="section-kicker">ACCOUNT WINDOWS</p>
@@ -167,7 +208,7 @@
             <div id="accountWindows" class="quota-window-list"></div>
           </section>
 
-          <section class="panel attribution-panel" aria-labelledby="attribution-title">
+          <section class="panel attribution-panel" data-provider-view="codex" aria-labelledby="attribution-title">
             <div class="panel-header">
               <div>
                 <p class="section-kicker">MONITORING ESTIMATE</p>
@@ -197,7 +238,7 @@
             <p id="attributionNote" class="small-note">归因按统计窗口内的账户变化估算，可能混入其他设备消耗。</p>
           </section>
 
-          <section id="trendSection" class="panel trend-panel panel-wide" aria-labelledby="trend-title">
+          <section id="trendSection" class="panel trend-panel panel-wide" data-provider-view="codex" aria-labelledby="trend-title">
             <div class="panel-header">
               <div>
                 <p class="section-kicker">QUOTA TREND</p>
@@ -214,7 +255,7 @@
             <p class="chart-caption">三条线显示同一统计窗口内的累计额度消耗；它们不表示账户剩余余额。</p>
           </section>
 
-          <section id="usageComparisonSection" class="panel usage-comparison-panel panel-wide" aria-labelledby="usage-comparison-title">
+          <section id="usageComparisonSection" class="panel usage-comparison-panel panel-wide" data-provider-view="codex" aria-labelledby="usage-comparison-title">
             <div class="panel-header">
               <div>
                 <p class="section-kicker">COST CHECK</p>
@@ -271,7 +312,7 @@
             </details>
           </section>
 
-          <section id="modelSection" class="panel recommendation-panel panel-wide" aria-labelledby="recommendation-title">
+          <section id="modelSection" class="panel recommendation-panel panel-wide" data-provider-view="codex" aria-labelledby="recommendation-title">
             <div class="panel-header">
               <div>
                 <p class="section-kicker">MODEL GUIDE</p>
@@ -330,7 +371,7 @@
             </details>
           </section>
 
-          <section id="resetSection" class="panel reset-panel panel-wide" aria-labelledby="reset-title">
+          <section id="resetSection" class="panel reset-panel panel-wide" data-provider-view="codex" aria-labelledby="reset-title">
             <div class="panel-header">
               <div>
                 <p class="section-kicker">RESET RADAR</p>
@@ -432,9 +473,9 @@
                 <div class="field-group">
                   <label class="field-label" for="pollSecondsInput">刷新频率</label>
                   <div class="input-with-unit"><input id="pollSecondsInput" type="number" min="5" max="3600" step="1" inputmode="numeric"><span>秒</span></div>
-                  <p class="field-help">统一更新本地任务、账户额度和页面，默认 5 秒。</p>
+                  <p id="pollSecondsHelp" class="field-help">统一更新本地任务、账户额度和页面，默认 5 秒。</p>
                 </div>
-                <div class="field-group">
+                <div class="field-group" data-provider-view="codex">
                   <label class="field-label" for="retentionHoursInput">账户统计窗口</label>
                   <div class="input-with-unit"><input id="retentionHoursInput" type="number" min="1" max="168" step="1" inputmode="numeric"><span>小时</span></div>
                   <p class="field-help">用于账户趋势、归因和当前速率校准；任务累计记录持续保留。</p>
@@ -467,7 +508,7 @@
       </main>
 
       <footer id="footer" class="footer full-dashboard data-card">
-        <span>本地插件 UI · 估算透明标注</span>
+        <span id="footerNote">本地插件 UI · 估算透明标注</span>
         <span id="footerUpdatedAt">尚未同步</span>
       </footer>
     </div>

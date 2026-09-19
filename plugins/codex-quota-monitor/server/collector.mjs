@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readFile, writeFile, rename, mkdir } from "node:fs/promises";
+import { readFile, writeFile, rename, mkdir, copyFile } from "node:fs/promises";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 import { LocalReader } from "./local-reader.mjs";
@@ -9,6 +9,7 @@ import { recommend } from "./recommend.mjs";
 import { buildModelOverview } from "./model-overview.mjs";
 import { buildUsageComparison } from "./usage-comparison.mjs";
 import { buildAttributionTrend } from "./attribution-trend.mjs";
+import { ProviderLedger, normalizeProvider, migrateProviderScope } from "./provider-ledger.mjs";
 import {
   buildResetRadar,
   fetchResetReference,
@@ -24,6 +25,7 @@ export const DEFAULT_SETTINGS = {
   hideDisclaimer: false,
   objective: "balanced",
   retentionHours: 24,
+  selectedProvider: null,
 };
 const errorText = (error) => String(error?.message || error).slice(0, 250);
 const editsFor = (model, effort) => [
@@ -49,6 +51,8 @@ export function validateSettings(patch) {
       if (!Number.isInteger(value) || value < 1 || value > 168)
         throw new Error("Retention window outside supported range");
     }
+    if (key === "selectedProvider" && value !== null && normalizeProvider(value) !== value)
+      throw new Error("Invalid monitoring provider");
     if (
       ["paused", "autoSwitch", "hideDisclaimer"].includes(key) &&
       typeof value !== "boolean"
@@ -98,6 +102,9 @@ export class Collector {
     };
     this.models = [];
     this.estimator = new Estimator();
+    this.providerLedger = new ProviderLedger();
+    this.providerAware = false;
+    this.allThreads = [];
     this.cost = {
       localReads: 0,
       remoteReads: 0,
@@ -138,6 +145,8 @@ export class Collector {
         }),
       };
       this.estimator = new Estimator(saved.estimator);
+      this.providerLedger = new ProviderLedger(saved.providerLedger);
+      this.providerLedger.seedLegacy(saved.estimator?.knownThreads);
       this.estimator.setRetentionHours(this.settings.retentionHours, Date.now());
       this.originalDefaults = saved.originalDefaults;
       this.lastApplied = saved.lastApplied;
@@ -177,6 +186,7 @@ export class Collector {
       mode: this.demo ? "demo" : "live",
       settings: this.settings,
       estimator: this.estimator.state,
+      providerLedger: this.providerLedger.state,
       originalDefaults: this.originalDefaults,
       lastApplied: this.lastApplied,
       resetReference: this.resetReference,
@@ -198,7 +208,18 @@ export class Collector {
         : await this.reader.read({ retentionHours: this.settings.retentionHours, includeAllKnown: true });
       if (!Array.isArray(result?.threads))
         throw new Error("Local reader returned no thread array");
-      this.threads = result.threads;
+      this.allThreads = result.threads;
+      this.providerAware = Boolean(result.providerConfig) || this.providerAware;
+      if (this.providerAware) {
+        this.providerLedger.ingest(result.threads, Date.now(), result.providerConfig,
+          Math.max(10000, this.settings.pollSeconds * 3000));
+        this.threads = this.providerLedger.codexThreads();
+        if (this.estimator.state.providerScopedVersion !== 1) {
+          await copyFile(join(this.dataDir,"state.json"),join(this.dataDir,`state.before-provider-scope-${Date.now()}.json`))
+            .catch(error=>{ if(error.code !== 'ENOENT') throw error; });
+          migrateProviderScope(this.estimator,this.threads);
+        }
+      } else this.threads = result.threads;
       this.diagnostics = Object.values(result.diagnostics || {}).flatMap(
         (value) =>
           typeof value === "string"
@@ -216,6 +237,7 @@ export class Collector {
         Date.now(),
         Math.max(10000, this.settings.pollSeconds * 3000),
       );
+      if (this.providerAware) await this.save();
     } catch (error) {
       this.diagnostics = ["本地状态读取失败：" + errorText(error)];
       this.threads = this.threads.map((thread) => ({
@@ -448,6 +470,8 @@ export class Collector {
     const desired = recommend(this.models, this.settings.objective);
     if (
       this.closed ||
+      (this.providerAware && (this.providerLedger.catalog(this.settings.selectedProvider).selectedId !== 'openai' ||
+        this.providerLedger.catalog().activeId !== 'openai')) ||
       !this.settings.autoSwitch ||
       !desired.model ||
       !desired.reasoningEffort
@@ -495,6 +519,12 @@ export class Collector {
   update(patch) {
     patch = validateSettings(patch);
     return this.mutate(async () => {
+      if (patch.selectedProvider && !this.providerLedger.catalog().providers.some(p=>p.id===patch.selectedProvider))
+        throw new Error("Provider is not configured or recorded locally");
+      if (patch.autoSwitch === true && this.providerAware &&
+          (this.providerLedger.catalog(patch.selectedProvider ?? this.settings.selectedProvider).selectedId !== 'openai' ||
+           this.providerLedger.catalog().activeId !== 'openai'))
+        throw new Error("API 监控不更改桌面模型配置；请在桌面设置中管理 API。");
       if (!this.settings.autoSwitch && patch.autoSwitch === true) {
         // Explicit re-enablement starts a new authorization from current defaults.
         this.originalDefaults = null;
@@ -549,6 +579,15 @@ export class Collector {
 
   snapshot() {
     const now = Date.now();
+    const providerSelection = this.providerLedger.catalog(this.settings.selectedProvider);
+    if (this.providerAware && providerSelection.selectedId !== 'openai') return {
+      version:'0.2.0',dataSchema:2,mode:this.demo?'demo':'live',dataSource:'local-api-provider-records',
+      now,settings:this.settings,providerSelection,
+      apiUsage:this.providerLedger.apiSnapshot(providerSelection.selectedId,now),
+      account:{windows:[],summary:null,plan:{type:null},error:null,stale:false},sessions:[],
+      diagnostics:this.diagnostics,cost:{...this.cost,requestsPerHour:this.settings.paused?0:3600/this.settings.quotaPollSeconds},
+      capabilities:{nativeInline:false,windowPopup:false,autoSwitchScope:'unavailable'},
+    };
     const state = this.estimator.state;
     const observationSince = this.estimator.observationSince(now);
     const window = mainWindow(this.account.windows);
@@ -614,6 +653,7 @@ export class Collector {
       dataSource: this.demo ? "synthetic-demo" : "current-local-codex-account",
       now,
       settings: this.settings,
+      providerSelection,
       account: { ...this.account, stale },
       sessions,
       attributionHistory: buildAttributionTrend(attribution.events, {

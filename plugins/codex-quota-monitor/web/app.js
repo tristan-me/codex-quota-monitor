@@ -16,6 +16,11 @@ import { formatTaskPercent, resetDeadline } from './dashboard-utils.mjs';
     mode: 'unknown',
     lastSettingsError: null,
     fetching: false,
+    fetchPromise: null,
+    providerChangeVersion: 0,
+    providerSaving: false,
+    pendingProviderId: null,
+    providerError: null,
     lastUpdatedAt: null,
     pollTimer: null,
     settingsQueue: Promise.resolve(),
@@ -39,6 +44,7 @@ import { formatTaskPercent, resetDeadline } from './dashboard-utils.mjs';
   };
 
   const $ = (id) => document.getElementById(id);
+  const codexProviderCopy = new Map();
 
   function isRecord(value) {
     return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -242,6 +248,136 @@ import { formatTaskPercent, resetDeadline } from './dashboard-utils.mjs';
     };
   }
 
+  function providerSelectionFrom(snapshot) {
+    const source = isRecord(snapshot) && isRecord(snapshot.providerSelection) ? snapshot.providerSelection : null;
+    const codex = { id: 'openai', name: 'Codex 账号', kind: 'codex' };
+    if (!source) return { available: false, selected: codex, active: null, providers: [codex] };
+    const providersById = new Map();
+    const entries = Array.isArray(source.providers) ? source.providers : [];
+    entries.filter(isRecord).forEach((entry) => {
+      const id = safeText(entry.id, '');
+      if (!id) return;
+      const kind = id === 'openai' || entry.kind === 'codex' ? 'codex' : entry.kind === 'api' ? 'api' : 'unknown';
+      providersById.set(id, { id, kind, name: kind === 'codex' ? 'Codex 账号' : safeText(entry.name, id === 'muse' ? 'Muse' : id) });
+    });
+    const selectedId = safeText(source.selectedId, safeText(source.activeId, 'openai'));
+    if (!providersById.has(selectedId)) {
+      const usage = isRecord(snapshot.apiUsage) && snapshot.apiUsage.providerId === selectedId ? snapshot.apiUsage : {};
+      providersById.set(selectedId, selectedId === 'openai' ? codex : {
+        id: selectedId, name: safeText(usage.providerName, selectedId === 'muse' ? 'Muse' : selectedId), kind: 'unknown',
+      });
+    }
+    const activeId = safeText(source.activeId, '');
+    const active = activeId ? providersById.get(activeId) || (activeId === 'openai' ? codex : {
+      id: activeId, name: activeId === 'muse' ? 'Muse' : activeId, kind: 'unknown',
+    }) : null;
+    return { available: true, selected: providersById.get(selectedId), active, providers: [...providersById.values()] };
+  }
+
+  function isApiProvider(snapshot) {
+    return providerSelectionFrom(snapshot).selected.kind !== 'codex';
+  }
+
+  function apiUsageFrom(snapshot) {
+    const usage = isRecord(snapshot) && isRecord(snapshot.apiUsage) ? snapshot.apiUsage : null;
+    return usage && usage.providerId === providerSelectionFrom(snapshot).selected.id ? usage : null;
+  }
+
+  function apiSessionsFrom(snapshot) {
+    const usage = apiUsageFrom(snapshot);
+    return usage && Array.isArray(usage.sessions) ? usage.sessions.filter(isRecord) : null;
+  }
+
+  function hasRecordedApiUsage(record) {
+    return isRecord(record) && (finiteNumber(record.totalTokens) > 0 || finiteNumber(record.turnCount) > 0);
+  }
+
+  function formatApiTokenCount(record, key) {
+    if (!hasRecordedApiUsage(record)) return '—';
+    const value = finiteNumber(record[key]);
+    if (value === null || value < 0) return '—';
+    if (key !== 'totalTokens' && key !== 'unclassifiedTokens' && value === 0 && finiteNumber(record.unclassifiedTokens) > 0) return '—';
+    return formatTokenCount(value);
+  }
+
+  function renderProviderSelection(snapshot) {
+    const selection = providerSelectionFrom(snapshot);
+    const api = selection.selected.kind !== 'codex';
+    document.body.classList.toggle('api-provider', api);
+    document.querySelectorAll('[data-provider-view]').forEach((element) => {
+      element.hidden = element.dataset.providerView !== (api ? 'api' : 'codex');
+    });
+    const select = $('providerSelect');
+    if (select) {
+      const signature = JSON.stringify(selection.providers.map(({ id, name }) => [id, name]));
+      if (select.dataset.providers !== signature) {
+        select.replaceChildren(...selection.providers.map((provider) => {
+          const option = textElement('option', '', provider.name);
+          option.value = provider.id;
+          return option;
+        }));
+        select.dataset.providers = signature;
+      }
+      select.value = state.pendingProviderId || selection.selected.id;
+      select.disabled = !selection.available || state.offline || state.providerSaving;
+      select.setAttribute('aria-busy', state.providerSaving ? 'true' : 'false');
+    }
+    setText('selectedProviderBadge', `正在查看：${selection.selected.name}`);
+    setText('activeProviderLabel', selection.active ? `桌面当前使用：${selection.active.name}` : '');
+    setHidden('activeProviderLabel', !selection.active);
+    setText('providerSelectionStatus', state.providerSaving ? '切换中…' : state.providerError || '', '');
+    $('providerSelectionStatus')?.classList.toggle('is-error', Boolean(state.providerError));
+
+    const usage = apiUsageFrom(snapshot);
+    const apiCopy = {
+      overviewKicker: 'API 用量 · 已知记录',
+      'overview-title': `${selection.selected.name} 的已记录用量`,
+      monitorUsageNote: '监控只读取本地用量记录，不会发起模型推理请求。',
+      sessionsKicker: 'API TASKS',
+      'sessions-title': 'API 任务用量（已知记录）',
+      sessionsNote: [
+        `仅统计本机可读且归属于 ${selection.selected.name} 的任务记录。缓存输入已包含在总输入中；未分类 token 已计入合计，输入/输出只显示可确认部分。`,
+        safeText(usage?.note, '历史未记录或不可读的部分无法补齐；这些数字不代表服务商余额或账单。'),
+      ].join(' '),
+      sessionSearchLabel: '筛选任务',
+      sessionsNavLabel: '任务',
+      pollSecondsHelp: '更新所选 API 的本地任务记录和页面，默认 5 秒。',
+      footerNote: '本地任务记录 · API token 用量',
+      disclaimerTitle: '先了解用量范围',
+      disclaimerText: '本页汇总所选 API 已记录的任务用量，历史缺失记录无法补齐。输入包含缓存输入；未分类 token 已计入合计，未列入输入/输出拆分。“—”表示暂无可读记录或拆分不可用。服务商余额和实际费用请以服务商账单为准。',
+    };
+    Object.entries(apiCopy).forEach(([id, value]) => {
+      const element = $(id);
+      if (!element) return;
+      if (!codexProviderCopy.has(id)) codexProviderCopy.set(id, element.textContent);
+      element.textContent = api ? value : codexProviderCopy.get(id);
+    });
+    $('sessionsNavLink')?.setAttribute('title', api ? 'API 任务用量' : '会话消耗');
+    $('sessionList')?.setAttribute('aria-label', api ? `${selection.selected.name} 任务列表` : 'Codex 会话列表');
+    $('sessionPagination')?.setAttribute('aria-label', api ? '任务分页' : '会话分页');
+  }
+
+  function renderApiOverview(snapshot) {
+    const usage = apiUsageFrom(snapshot);
+    const summary = isRecord(usage?.summary) ? usage.summary : {};
+    setText('apiInputTokens', formatApiTokenCount(summary, 'inputTokens'));
+    setText('apiCachedInputTokens', formatApiTokenCount(summary, 'cachedInputTokens'));
+    setText('apiOutputTokens', formatApiTokenCount(summary, 'outputTokens'));
+    setText('apiTotalTokens', formatApiTokenCount(summary, 'totalTokens'));
+    const hasUsage = hasRecordedApiUsage(summary);
+    const unclassified = finiteNumber(summary.unclassifiedTokens);
+    setText('apiTokenCoverage', !hasUsage
+      ? '暂无可读的 token 用量；“—”表示未记录，不代表零消耗。'
+      : unclassified > 0
+        ? `未分类 token：${formatTokenCount(unclassified)}，已计入合计。分项仅显示可确认部分；“—”表示拆分不可用。以上用量为已知下限。`
+        : '以上用量为已知记录的下限，未读取的历史用量无法补齐。');
+    const since = parseDate(usage?.since);
+    const until = parseDate(usage?.until);
+    setText('apiUsageRange', hasUsage && since
+      ? `已知记录范围：${formatDate(since)}${until ? ` — ${formatDate(until)}` : '起'}`
+      : '等待所选 API 的可读用量记录');
+  }
+
   function modeOf(snapshot) {
     if (state.offline) return 'offline';
     const values = [];
@@ -392,6 +528,16 @@ import { formatTaskPercent, resetDeadline } from './dashboard-utils.mjs';
   }
 
   function summaryStatus(snapshot) {
+    if (isApiProvider(snapshot)) {
+      const usage = apiUsageFrom(snapshot);
+      const sessions = apiSessionsFrom(snapshot);
+      if (!sessions) return '等待 API 任务记录';
+      const summary = isRecord(usage.summary) ? usage.summary : {};
+      const taskCount = finiteNumber(summary.taskCount) ?? sessions.length;
+      const activeCount = finiteNumber(summary.activeTaskCount) ?? sessions.filter((session) => isActiveStatus(session.status)).length;
+      const turns = finiteNumber(summary.turnCount);
+      return `${formatTokenCount(taskCount)} 个任务 · ${formatTokenCount(activeCount)} 个活跃${hasRecordedApiUsage(summary) ? turns === null ? '' : ` · 已记录 ${formatTokenCount(turns)} 轮` : ' · 暂无可读用量'}`;
+    }
     const sessions = sessionsFrom(snapshot);
     if (!sessions) return '等待会话样本';
     const active = sessions.filter((session) => isRootSession(session) && isActiveStatus(session.status)).length;
@@ -403,15 +549,25 @@ import { formatTaskPercent, resetDeadline } from './dashboard-utils.mjs';
     const mode = modeOf(snapshot);
     state.mode = mode;
     const copy = modeCopy(mode);
+    const api = isApiProvider(snapshot);
+    const provider = providerSelectionFrom(snapshot).selected;
     const account = isRecord(snapshot) && isRecord(snapshot.account) ? snapshot.account : {};
-    if (mode === 'live' && account.stale === true) {
+    if (api && mode === 'live') {
+      copy.label = `${provider.name} · 本地用量记录`;
+      copy.detail = '显示所选 API 已记录的 token 用量；仅切换监控视图，不改变任务使用的 API。';
+    } else if (api && mode === 'demo') {
+      copy.label = '演示数据，不是你的 API 任务';
+      copy.detail = '合成任务与 token 用量仅用于预览。';
+    } else if (api && mode === 'unknown') {
+      copy.detail = '等待服务声明 live 或 demo；当前用量记录的数据来源待确认。';
+    } else if (mode === 'live' && account.stale === true) {
       copy.detail = '账户官方样本已过期；以下数字保留作参考，不代表实时额度。';
     }
     const banner = $('modeBanner');
     if (banner) {
       banner.classList.remove('mode-live', 'mode-demo', 'mode-offline', 'mode-unknown', 'is-stale');
       banner.classList.add(`mode-${mode}`);
-      if (mode === 'live' && account.stale === true) banner.classList.add('is-stale');
+      if (!api && mode === 'live' && account.stale === true) banner.classList.add('is-stale');
     }
     const titles = {
       live: 'Codex 额度监控器',
@@ -420,6 +576,7 @@ import { formatTaskPercent, resetDeadline } from './dashboard-utils.mjs';
       unknown: '数据源未声明 · Codex 额度监控器',
     };
     document.title = titles[mode] || titles.unknown;
+    if (api) document.title = `${mode === 'demo' ? '演示数据 · ' : ''}${provider.name} 用量 · Codex 额度监控器`;
     setText('modeBannerLabel', copy.label, '数据源未声明');
     setText('modeBannerDetail', copy.detail, '等待服务声明 live 或 demo；请先确认数据来源。');
     const watermark = $('demoWatermark');
@@ -427,12 +584,15 @@ import { formatTaskPercent, resetDeadline } from './dashboard-utils.mjs';
       watermark.hidden = mode !== 'demo';
       watermark.setAttribute('aria-hidden', mode === 'demo' ? 'false' : 'true');
     }
-    const allowModelOperations = mode === 'live' && !state.offline;
+    const allowModelOperations = mode === 'live' && !state.offline && !api && !state.providerSaving;
     const objective = $('objectiveSelect');
     const autoSwitch = $('autoSwitchCheckbox');
     const restoreDefaults = $('restoreDefaultsBtn');
     if (objective) objective.disabled = !allowModelOperations;
-    if (autoSwitch) autoSwitch.disabled = !allowModelOperations;
+    if (autoSwitch) {
+      autoSwitch.disabled = !allowModelOperations;
+      if (api) autoSwitch.checked = false;
+    }
     if (restoreDefaults) restoreDefaults.disabled = !allowModelOperations || state.restoreSaving;
     setHidden('demoSettingsNote', mode !== 'demo');
   }
@@ -469,7 +629,7 @@ import { formatTaskPercent, resetDeadline } from './dashboard-utils.mjs';
     const status = state.offline ? '服务已关闭或链接已过期' : state.error ? '连接异常' : accountError ? '账户额度读取异常' : state.fetching ? '读取本地快照' : '已连接';
     const statusText = state.offline
       ? `${status} · 请重新运行 Open-Monitor.command，或从新任务打开监控器`
-      : `${status} · 每 ${settings.pollSeconds} 秒刷新 · ${updated}${settings.paused ? ' · 后台读取暂停' : ''}`;
+      : `${status}${isApiProvider(snapshot) ? ` · ${providerSelectionFrom(snapshot).selected.name}` : ''} · 每 ${settings.pollSeconds} 秒刷新 · ${updated}${settings.paused ? ' · 后台读取暂停' : ''}`;
     setText('globalStatus', statusText, '等待连接');
     setText('compactStatusText', statusText, '等待连接');
   }
@@ -611,7 +771,7 @@ import { formatTaskPercent, resetDeadline } from './dashboard-utils.mjs';
     }).filter(Boolean);
   }
 
-  function renderSessionPagination(filteredCount, totalCount) {
+  function renderSessionPagination(filteredCount, totalCount, noun = '根会话') {
     const pageSize = state.sessionPageSize;
     const pages = Math.max(1, Math.ceil(filteredCount / pageSize));
     state.sessionPage = Math.min(Math.max(0, state.sessionPage), pages - 1);
@@ -627,11 +787,15 @@ import { formatTaskPercent, resetDeadline } from './dashboard-utils.mjs';
       expand.hidden = filteredCount === 0;
     }
     if (reset) reset.hidden = pageSize <= 5;
-    if (pageInfo) pageInfo.textContent = filteredCount === 0 ? '无匹配会话' : `第 ${state.sessionPage + 1} / ${pages} 页 · 每页 ${pageSize}`;
-    setText('sessionFilterSummary', filteredCount === totalCount ? `共 ${totalCount} 个根会话` : `匹配 ${filteredCount} / ${totalCount} 个根会话`, '显示全部会话');
+    if (pageInfo) pageInfo.textContent = filteredCount === 0 ? `无匹配${noun === '根会话' ? '会话' : noun}` : `第 ${state.sessionPage + 1} / ${pages} 页 · 每页 ${pageSize}`;
+    setText('sessionFilterSummary', filteredCount === totalCount ? `共 ${totalCount} 个${noun}` : `匹配 ${filteredCount} / ${totalCount} 个${noun}`, '显示全部会话');
   }
 
   function renderSessionList(snapshot) {
+    if (isApiProvider(snapshot)) {
+      renderApiSessionList(snapshot);
+      return;
+    }
     const list = $('sessionList');
     if (!list) return;
     list.replaceChildren();
@@ -807,6 +971,82 @@ import { formatTaskPercent, resetDeadline } from './dashboard-utils.mjs';
           row.append(childList);
         }
       }
+      list.append(row);
+    });
+  }
+
+  function renderApiSessionList(snapshot) {
+    const list = $('sessionList');
+    if (!list) return;
+    list.replaceChildren();
+    const sessions = apiSessionsFrom(snapshot);
+    const provider = providerSelectionFrom(snapshot).selected;
+    const search = $('sessionSearch');
+    if (search && document.activeElement !== search) search.value = state.sessionQuery;
+    setText('sessionSummaryText', summaryStatus(snapshot));
+    setText('sessionRefreshHint', `已知任务记录 · 每 ${getSettings(snapshot).pollSeconds} 秒更新`);
+    if (!sessions || sessions.length === 0) {
+      list.append(textElement('div', 'empty-state', sessions
+        ? `尚无 ${provider.name} 的可读任务用量记录`
+        : `等待 ${provider.name} 的本地任务快照`));
+      renderSessionPagination(0, 0, '任务');
+      return;
+    }
+    const query = sessionQueryTokens(state.sessionQuery);
+    const filtered = query.length ? sessions.filter((session) => sessionMatches(session, query)) : sessions;
+    renderSessionPagination(filtered.length, sessions.length, '任务');
+    if (!filtered.length) {
+      list.append(textElement('div', 'empty-state', '没有匹配的任务 · 可清除搜索条件'));
+      return;
+    }
+    const start = state.sessionPage * state.sessionPageSize;
+    filtered.slice(start, start + state.sessionPageSize).forEach((session, index) => {
+      const row = textElement('article', 'session-row api-task-row', '');
+      row.setAttribute('role', 'listitem');
+      const header = textElement('div', 'session-row-header', '');
+      const titleBlock = textElement('div', 'session-title-block', '');
+      const title = textElement('h3', 'session-title', safeText(session.title, `未命名任务 ${start + index + 1}`));
+      title.title = title.textContent;
+      const id = textElement('span', 'session-id', session.id);
+      id.title = id.textContent;
+      titleBlock.append(title, id);
+      header.append(titleBlock, textElement('span', `status-chip ${statusClass(session.status)}`, statusLabel(session.status)));
+      row.append(header);
+
+      const meta = textElement('div', 'session-meta', '');
+      const model = textElement('span', 'meta-item meta-title', safeText(session.model, '模型未记录'));
+      model.title = model.textContent;
+      meta.append(model);
+      const effort = safeText(session.reasoningEffort, '');
+      if (effort) meta.append(textElement('span', 'meta-separator', '·'), textElement('span', 'meta-item', effort));
+      row.append(meta);
+
+      const metrics = textElement('dl', 'api-task-metrics', '');
+      [
+        ['已记录总输入 token', 'inputTokens'],
+        ['已记录缓存输入 token', 'cachedInputTokens'],
+        ['已记录输出 token', 'outputTokens'],
+        ['已记录合计 token', 'totalTokens'],
+      ].forEach(([label, key]) => {
+        const metric = textElement('div', 'api-task-metric', '');
+        metric.append(textElement('dt', '', label), textElement('dd', '', formatApiTokenCount(session, key)));
+        metrics.append(metric);
+      });
+      row.append(metrics);
+      if (finiteNumber(session.unclassifiedTokens) > 0) {
+        row.append(textElement('p', 'api-task-unclassified', `未分类 token：${formatTokenCount(session.unclassifiedTokens)}，已计入合计，未列入输入/输出拆分。`));
+      }
+      const hasUsage = hasRecordedApiUsage(session);
+      const details = [
+        `已记录耗时 ${hasUsage ? formatDuration(session.totalElapsedSeconds, '未记录') : '—'}`,
+        hasUsage ? `已记录 ${formatTokenCount(session.turnCount)} 轮` : '轮次未记录',
+      ];
+      if (parseDate(session.startedAt)) details.push(`开始 ${formatDate(session.startedAt)}`);
+      if (parseDate(session.completedAt)) details.push(`结束 ${formatDate(session.completedAt)}`);
+      row.append(textElement('p', 'api-task-detail', details.join(' · ')));
+      if (!hasUsage || session.partial === true) row.append(textElement('p', 'session-scope-note api-task-partial', hasUsage
+        ? '记录不完整，以上用量为已知下限。'
+        : '尚无可读用量记录；“—”不代表零消耗。'));
       list.append(row);
     });
   }
@@ -1648,6 +1888,7 @@ import { formatTaskPercent, resetDeadline } from './dashboard-utils.mjs';
   }
 
   function renderCountdowns() {
+    if (isApiProvider(state.snapshot)) return;
     if (Number.isFinite(state.resetDeadline)) {
       const remaining = (state.resetDeadline - Date.now()) / 1000;
       setText('officialResetCountdown', formatResetCountdown(remaining), '等待数据');
@@ -1667,19 +1908,27 @@ import { formatTaskPercent, resetDeadline } from './dashboard-utils.mjs';
 
   function render(snapshot) {
     const safeSnapshot = isRecord(snapshot) ? snapshot : {};
+    renderProviderSelection(safeSnapshot);
     renderMode(snapshot);
     renderOfflineState();
     renderConnection(snapshot);
     renderGlobalError(safeSnapshot);
-    renderOverview(safeSnapshot);
     renderSessionList(safeSnapshot);
-    renderAccountWindows(safeSnapshot);
-    renderAttribution(safeSnapshot);
-    renderTrend(safeSnapshot);
-    renderUsageComparison(safeSnapshot);
-    renderRecommendation(safeSnapshot);
-    renderReset(safeSnapshot);
-    renderResetRadar(safeSnapshot);
+    if (isApiProvider(safeSnapshot)) {
+      renderApiOverview(safeSnapshot);
+      state.resetDeadline = null;
+      state.resetScheduledAt = null;
+      state.exhaustionAt = null;
+    } else {
+      renderOverview(safeSnapshot);
+      renderAccountWindows(safeSnapshot);
+      renderAttribution(safeSnapshot);
+      renderTrend(safeSnapshot);
+      renderUsageComparison(safeSnapshot);
+      renderRecommendation(safeSnapshot);
+      renderReset(safeSnapshot);
+      renderResetRadar(safeSnapshot);
+    }
     renderDiagnostics(safeSnapshot);
     renderSettings(safeSnapshot);
     setText('footerUpdatedAt', formatUpdated(state.lastUpdatedAt || safeSnapshot.now), '尚未同步');
@@ -1717,9 +1966,15 @@ import { formatTaskPercent, resetDeadline } from './dashboard-utils.mjs';
     }, settings.pollSeconds * 1000);
   }
 
-  async function fetchSnapshot() {
-    if (state.fetching) return;
+  function fetchSnapshot() {
+    if (state.fetchPromise) return state.fetchPromise;
+    state.fetchPromise = loadSnapshot().finally(() => { state.fetchPromise = null; });
+    return state.fetchPromise;
+  }
+
+  async function loadSnapshot() {
     state.fetching = true;
+    const providerVersion = state.providerChangeVersion;
     render(state.snapshot || {});
     try {
       const response = await window.fetch(API_SNAPSHOT, {
@@ -1732,11 +1987,13 @@ import { formatTaskPercent, resetDeadline } from './dashboard-utils.mjs';
       if (!response.ok) throw new Error(await responseError(response));
       const payload = await response.json();
       if (!isRecord(payload)) throw new Error('快照格式无效');
+      if (providerVersion !== state.providerChangeVersion) return;
       state.snapshot = payload;
       state.error = null;
       state.offline = false;
       state.lastUpdatedAt = Date.now();
     } catch (error) {
+      if (providerVersion !== state.providerChangeVersion) return;
       state.error = safeError(error, '读取快照失败');
       state.snapshot = null;
       state.offline = true;
@@ -1772,12 +2029,11 @@ import { formatTaskPercent, resetDeadline } from './dashboard-utils.mjs';
       } catch (_error) {
         payload = null;
       }
-      if (isRecord(payload) && isRecord(payload.settings)) {
-        if (Object.hasOwn(payload, 'version') || Object.hasOwn(payload, 'sessions') || Object.hasOwn(payload, 'account')) {
-          state.snapshot = payload;
-        } else {
-          mergeSettingsIntoSnapshot(payload.settings);
-        }
+      if (Object.hasOwn(patch, 'selectedProvider')) state.providerChangeVersion += 1;
+      if (isRecord(payload) && ['version', 'sessions', 'account', 'providerSelection', 'apiUsage'].some((key) => Object.hasOwn(payload, key))) {
+        state.snapshot = payload;
+      } else if (isRecord(payload) && isRecord(payload.settings)) {
+        mergeSettingsIntoSnapshot(payload.settings);
       } else {
         mergeSettingsIntoSnapshot(patch);
       }
@@ -1807,8 +2063,38 @@ import { formatTaskPercent, resetDeadline } from './dashboard-utils.mjs';
     return state.settingsQueue;
   }
 
+  async function selectProvider(providerId) {
+    const selection = providerSelectionFrom(state.snapshot);
+    if (state.providerSaving || state.offline || !selection.available || providerId === selection.selected.id) return;
+    if (!selection.providers.some((provider) => provider.id === providerId)) return;
+    state.providerSaving = true;
+    state.pendingProviderId = providerId;
+    state.providerError = null;
+    state.providerChangeVersion += 1;
+    render(state.snapshot || {});
+    try {
+      const saved = await queueSettingsPatch({ selectedProvider: providerId });
+      if (!saved) {
+        state.providerError = `切换失败：${safeError(state.lastSettingsError, '设置未保存')}`;
+        return;
+      }
+      if (providerSelectionFrom(state.snapshot).selected.id !== providerId) {
+        // Settings-only responses require a fresh snapshot after any older poll has finished.
+        if (state.fetchPromise) await state.fetchPromise;
+        await fetchSnapshot();
+      }
+      if (!state.offline && providerSelectionFrom(state.snapshot).selected.id !== providerId) {
+        state.providerError = '选择已保存，等待服务更新监控视图。';
+      }
+    } finally {
+      state.providerSaving = false;
+      state.pendingProviderId = null;
+      render(state.snapshot || {});
+    }
+  }
+
   async function restoreDefaults() {
-    if (state.restoreSaving || state.mode !== 'live' || state.offline) return;
+    if (state.restoreSaving || state.mode !== 'live' || state.offline || isApiProvider(state.snapshot) || state.providerSaving) return;
     state.restoreSaving = true;
     const button = $('restoreDefaultsBtn');
     const status = $('restoreDefaultsStatus');
@@ -1852,7 +2138,7 @@ import { formatTaskPercent, resetDeadline } from './dashboard-utils.mjs';
       }
     } finally {
       state.restoreSaving = false;
-      if (button) button.disabled = false;
+      if (button) button.disabled = state.mode !== 'live' || state.offline || isApiProvider(state.snapshot) || state.providerSaving;
     }
   }
 
@@ -1889,6 +2175,8 @@ import { formatTaskPercent, resetDeadline } from './dashboard-utils.mjs';
     const retry = $('retryBtn');
     if (refresh) refresh.addEventListener('click', () => fetchSnapshot());
     if (retry) retry.addEventListener('click', () => fetchSnapshot());
+    const provider = $('providerSelect');
+    if (provider) provider.addEventListener('change', () => selectProvider(provider.value));
 
     const poll = $('pollSecondsInput');
     if (poll) poll.addEventListener('change', () => queueSettingsPatch({ pollSeconds: readIntegerInput('pollSecondsInput', 5, 3600, 5) }));
@@ -1898,12 +2186,16 @@ import { formatTaskPercent, resetDeadline } from './dashboard-utils.mjs';
     if (paused) paused.addEventListener('change', () => queueSettingsPatch({ paused: paused.checked }));
     const objective = $('objectiveSelect');
     if (objective) objective.addEventListener('change', () => {
+      if (isApiProvider(state.snapshot) || state.providerSaving || state.mode !== 'live' || state.offline) return;
       const value = OBJECTIVES.has(objective.value) ? objective.value : 'balanced';
       objective.value = value;
       queueSettingsPatch({ objective: value });
     });
     const autoSwitch = $('autoSwitchCheckbox');
-    if (autoSwitch) autoSwitch.addEventListener('change', () => queueSettingsPatch({ autoSwitch: autoSwitch.checked }));
+    if (autoSwitch) autoSwitch.addEventListener('change', () => {
+      if (isApiProvider(state.snapshot) || state.providerSaving || state.mode !== 'live' || state.offline) return;
+      queueSettingsPatch({ autoSwitch: autoSwitch.checked });
+    });
     const restore = $('restoreDefaultsBtn');
     if (restore) restore.addEventListener('click', () => restoreDefaults());
 
@@ -2111,7 +2403,7 @@ import { formatTaskPercent, resetDeadline } from './dashboard-utils.mjs';
       if (trendResizeFrame !== null) window.cancelAnimationFrame(trendResizeFrame);
       trendResizeFrame = window.requestAnimationFrame(() => {
         trendResizeFrame = null;
-        if (state.snapshot) renderTrend(state.snapshot);
+        if (state.snapshot && !isApiProvider(state.snapshot)) renderTrend(state.snapshot);
       });
     });
     render({});

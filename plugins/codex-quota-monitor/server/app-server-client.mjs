@@ -35,7 +35,10 @@ export function commandConfiguration() {
     process.env.CODEX_QUOTA_MONITOR_CODEX_BIN ||
     desktop.find(existsSync) ||
     "codex";
-  return { command, args: ["-c", "features.plugins=false", "app-server"] };
+  // This private read-only process queries the signed-in Codex account even
+  // while the desktop's model traffic uses a custom API provider. No user
+  // configuration is changed and no inference request is sent here.
+  return { command, args: ["-c", "features.plugins=false", "-c", 'model_provider="openai"', "app-server"] };
 }
 export const READ_METHODS = new Set([
   "account/rateLimits/read",

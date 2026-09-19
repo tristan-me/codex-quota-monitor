@@ -18,6 +18,7 @@ const PROJECTION_LAG_MS = 2_000;
 const MAX_ROLLOUT_LINE_BYTES = 2 * 1024 * 1024;
 const SQLITE_BIND_CHUNK = 500;
 const MAX_TURN_HISTORY_PER_THREAD = 5_000;
+const MAX_PROVIDER_CONFIG_BYTES = 1024 * 1024;
 
 const ACTIVE_STATUSES = new Set([
   "active",
@@ -55,6 +56,7 @@ const THREAD_COLUMNS = [
   "id",
   "title",
   "model",
+  "model_provider",
   "reasoning_effort",
   "source",
   "thread_source",
@@ -76,6 +78,7 @@ const TURN_COLUMNS = [
   "started_at",
   "completed_at",
   "duration_ms",
+  "model_provider",
 ];
 
 function finiteNumber(value) {
@@ -144,6 +147,141 @@ function safeTitle(name, title) {
   if (preferred === null || preferred === undefined) return null;
   const firstLine = String(preferred).split(/\r?\n/, 1)[0].trim();
   return firstLine ? firstLine.slice(0, 120) : null;
+}
+
+function providerId(value) {
+  if (typeof value !== "string") return null;
+  const id = value.trim();
+  return /^[A-Za-z0-9][A-Za-z0-9_.-]{0,119}$/.test(id) ? id : null;
+}
+
+function providerName(value, id) {
+  if (typeof value !== "string") return id;
+  const name = value.trim();
+  // Names are labels, never a fallback for endpoint or authentication fields.
+  return name && name.length <= 120 && !/[\u0000-\u001f\u007f]|[a-z][a-z0-9+.-]*:\/\//i.test(name)
+    ? name : id;
+}
+
+function tomlString(value) {
+  if (/^'[^']*'$/.test(value)) return value.slice(1, -1);
+  if (!/^"(?:[^"\\]|\\.)*"$/.test(value)) return null;
+  try {
+    return JSON.parse(value.replace(/\\U([0-9a-fA-F]{8})/g, (_, hex) => {
+      const codePoint = Number.parseInt(hex, 16);
+      if (codePoint > 0x10ffff) throw new Error("invalid code point");
+      return JSON.stringify(String.fromCodePoint(codePoint)).slice(1, -1);
+    }));
+  } catch {
+    return null;
+  }
+}
+
+function tomlTablePath(value) {
+  const parts = [];
+  let remaining = value.trim();
+  while (remaining) {
+    const match = /^("(?:[^"\\]|\\.)*"|'[^']*'|[A-Za-z0-9_-]+)\s*/.exec(remaining);
+    if (!match) return null;
+    parts.push(match[1][0] === '"' || match[1][0] === "'"
+      ? tomlString(match[1]) : match[1]);
+    remaining = remaining.slice(match[0].length);
+    if (!remaining) break;
+    if (remaining[0] !== ".") return null;
+    remaining = remaining.slice(1).trimStart();
+    if (!remaining) return null;
+  }
+  return parts;
+}
+
+// Read just the supported provider labels. This small TOML scanner skips
+// comments and multiline strings, including instructions containing TOML-like
+// text, and never materializes unrelated settings in the returned object.
+function providerConfigFromText(text) {
+  const providers = new Map();
+  let activeProvider = null;
+  let section = [];
+  let multiline = null;
+  for (const rawLine of text.split(/\r?\n/)) {
+    let quote = null;
+    let escaped = false;
+    let ignored = Boolean(multiline);
+    let end = rawLine.length;
+    for (let index = 0; index < rawLine.length; index += 1) {
+      const char = rawLine[index];
+      if (escaped) { escaped = false; continue; }
+      if ((multiline === '"' || quote === '"') && char === "\\") {
+        escaped = true;
+        continue;
+      }
+      if (multiline) {
+        if (rawLine.slice(index, index + 3) === multiline.repeat(3)) {
+          multiline = null;
+          index += 2;
+        }
+        continue;
+      }
+      if (quote) {
+        if (char === quote) quote = null;
+        continue;
+      }
+      if (char === "#") { end = index; break; }
+      if (char === '"' || char === "'") {
+        if (rawLine.slice(index, index + 3) === char.repeat(3)) {
+          multiline = char;
+          ignored = true;
+          index += 2;
+        } else quote = char;
+      }
+    }
+    if (ignored || quote) continue;
+    const line = rawLine.slice(0, end).trim();
+    if (line.startsWith("[")) {
+      section = /^\[[^\[].*\]$/.test(line)
+        ? tomlTablePath(line.slice(1, -1)) : null;
+      if (section?.length === 2 && section[0] === "model_providers") {
+        const id = providerId(section[1]);
+        if (id && !providers.has(id)) providers.set(id, { id, name: id });
+      }
+      continue;
+    }
+    if (section?.length === 0) {
+      const match = /^(?:model_provider|"model_provider"|'model_provider')\s*=\s*(.*)$/.exec(line);
+      if (match) activeProvider = providerId(tomlString(match[1]));
+    } else if (section?.length === 2 && section[0] === "model_providers") {
+      const id = providerId(section[1]);
+      const match = /^(?:name|"name"|'name')\s*=\s*(.*)$/.exec(line);
+      if (id && match) providers.set(id, { id, name: providerName(tomlString(match[1]), id) });
+    }
+  }
+  if (activeProvider && !providers.has(activeProvider)) {
+    providers.set(activeProvider, { id: activeProvider, name: activeProvider });
+  }
+  return { activeProvider, providers: [...providers.values()] };
+}
+
+function readProviderConfig(codexHome, diagnostics) {
+  const empty = { activeProvider: null, providers: [] };
+  const file = path.join(codexHome, "config.toml");
+  let fd;
+  try {
+    fd = fs.openSync(file, "r");
+    const stat = fs.fstatSync(fd);
+    if (!stat.isFile() || stat.size > MAX_PROVIDER_CONFIG_BYTES) {
+      diagnostics.warnings.push("config.toml provider metadata exceeds the bounded reader");
+      return empty;
+    }
+    const buffer = Buffer.alloc(stat.size);
+    const bytes = fs.readSync(fd, buffer, 0, buffer.length, 0);
+    return providerConfigFromText(buffer.subarray(0, bytes).toString("utf8"));
+  } catch (error) {
+    if (error?.code !== "ENOENT") {
+      diagnostics.warnings.push("config.toml provider metadata could not be read");
+    }
+    return empty;
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+  }
 }
 
 function parseSource(rawSource) {
@@ -270,7 +408,75 @@ function nestedTokenNumber(value) {
   return number === null || number < 0 ? null : Math.round(number);
 }
 
+function providerContext(payload, state, previous = null) {
+  if (Object.hasOwn(payload, "model_provider") || Object.hasOwn(payload, "modelProvider")) {
+    return {
+      modelProvider: providerId(payload.model_provider ?? payload.modelProvider),
+      providerSource: "turn_context",
+      providerObservedMatch: false,
+    };
+  }
+  if (previous?.providerSource || previous?.providerAmbiguous) {
+    return {
+      modelProvider: previous.modelProvider,
+      providerSource: previous.providerSource,
+      providerObservedMatch: previous.providerObservedMatch,
+      providerAmbiguous: previous.providerAmbiguous,
+    };
+  }
+  const modelProvider = state.sessionMetadata?.modelProvider ?? null;
+  return {
+    modelProvider,
+    providerSource: modelProvider ? "session_meta" : null,
+    providerObservedMatch: Boolean(modelProvider && modelProvider === state.threadModelProvider),
+  };
+}
+
+function resolvedTurnProvider(turn, threadModelProvider) {
+  if (turn?.providerAmbiguous) {
+    return { modelProvider: null, providerSource: turn.providerSource, providerAmbiguous: true };
+  }
+  const modelProvider = providerId(turn?.modelProvider);
+  // The thread row describes its current provider. An initial session header
+  // cannot establish when an unrecorded resume/provider switch occurred.
+  if (modelProvider && turn.providerSource === "session_meta" &&
+      threadModelProvider && modelProvider !== threadModelProvider &&
+      !(turn.providerObservedMatch && statusClass(turn.status) === "idle")) {
+    return { modelProvider: null, providerSource: "conflicting-thread-metadata", providerAmbiguous: true };
+  }
+  return { modelProvider, providerSource: turn?.providerSource ?? null, providerAmbiguous: false };
+}
+
+function markProviderAmbiguous(turn, state, source) {
+  // A single turn may be resumed on another provider. Without request-level
+  // attribution its combined token counter must not become subscription cost.
+  state.usageCredits -= turn.costCredits || 0;
+  state.costTokens -= turn.costTokens || 0;
+  state.sessionUsageCredits -= turn.sessionCostCredits || 0;
+  state.sessionCostTokens -= turn.sessionCostTokens || 0;
+  state.observedSessionUsageCredits -= turn.observedSessionCostCredits || 0;
+  state.observedSessionCostTokens -= turn.observedSessionCostTokens || 0;
+  Object.assign(turn, {
+    modelProvider: null, providerSource: source, providerAmbiguous: true,
+    costCredits: 0, costTokens: 0, costPartial: true,
+    sessionCostCredits: 0, sessionCostTokens: 0,
+    observedSessionCostCredits: 0, observedSessionCostTokens: 0,
+  });
+}
+
+function confirmExplicitProviderCost(turn, state) {
+  // A later explicit provider on the same turn confirms prior matching
+  // session-level samples. They no longer depend on current thread metadata.
+  state.sessionUsageCredits -= turn.sessionCostCredits || 0;
+  state.sessionCostTokens -= turn.sessionCostTokens || 0;
+  state.observedSessionUsageCredits -= turn.observedSessionCostCredits || 0;
+  state.observedSessionCostTokens -= turn.observedSessionCostTokens || 0;
+  turn.sessionCostCredits = turn.sessionCostTokens = 0;
+  turn.observedSessionCostCredits = turn.observedSessionCostTokens = 0;
+}
+
 function parseLegacyEventLine(line, state, sequence) {
+  if (sequence === 0) state.sessionHeaderInspected = true;
   if (line.length > MAX_ROLLOUT_LINE_BYTES) return false;
   let row;
   try {
@@ -290,15 +496,37 @@ function parseLegacyEventLine(line, state, sequence) {
         ? row.event_msg
         : null;
   if (!payload || typeof payload !== "object") return false;
+  if (outerType === "session_meta") {
+    const metadata = {
+      modelProvider: providerId(payload.model_provider ?? payload.modelProvider),
+      timestamp: normalizeTimestamp(row.timestamp),
+    };
+    state.firstSessionMetadata ??= metadata;
+    state.sessionMetadata = metadata;
+    return true;
+  }
   if (outerType === "turn_context") {
-    const turnId = safeText(payload.turn_id);
+    const explicitTurnId = safeText(payload.turn_id ?? payload.turnId);
+    const turn = state.turns.get(explicitTurnId || state.latestKey);
+    const turnId = explicitTurnId || turn?.turnId || null;
+    const previous = turn || (state.currentContext?.turnId === turnId ? state.currentContext : null);
     state.currentContext = {
       turnId, model: safeText(payload.model),
       reasoningEffort: safeText(payload.effort ?? payload.reasoning_effort),
       serviceTier: safeText(payload.service_tier),
+      ...providerContext(payload, state, previous),
     };
-    const turn = state.turns.get(turnId || state.latestKey);
-    if (turn) Object.assign(turn, state.currentContext);
+    if (turn) {
+      const previousProvider = turn.modelProvider;
+      const wasAmbiguous = turn.providerAmbiguous;
+      Object.assign(turn, state.currentContext);
+      if (wasAmbiguous || (turn.tokenUsage?.totalTokens > 0 &&
+          previousProvider !== turn.modelProvider)) {
+        markProviderAmbiguous(turn, state, "mixed-turn-providers");
+      } else if (turn.providerSource === "turn_context") {
+        confirmExplicitProviderCost(turn, state);
+      }
+    }
     return true;
   }
   const type =
@@ -332,7 +560,9 @@ function parseLegacyEventLine(line, state, sequence) {
 
   if (type === "task_started") {
     const previous = state.turns.get(current);
+    const context = state.currentContext?.turnId === turnId ? state.currentContext : null;
     state.turns.set(current, newerLifecycle(previous, {
+      ...(context || providerContext(payload, state)),
       ...(previous?.startedAt === startedAt ? previous : {}),
       turnId,
       usageStartSeen: true,
@@ -409,23 +639,45 @@ function parseLegacyEventLine(line, state, sequence) {
     if (cumulative) state.lastTokenUsage = cumulative;
     const owner = turnId || state.currentContext?.turnId || state.latestKey;
     const turn = state.turns.get(owner);
-    if (turn && cumulative && !increment) turn.costPartial = true;
+    const hasReportedUsage = totalUsage || lastUsage || total !== null || delta !== null;
+    if (turn && hasReportedUsage && (!cumulative || !increment)) {
+      turn.usagePartial = true;
+      turn.costPartial = true;
+    }
     if (increment?.totalTokens > 0 && turn && Number.isFinite(eventAt) &&
         (!Number.isFinite(turn.startedAt) || eventAt >= turn.startedAt) &&
         (!Number.isFinite(turn.completedAt) || eventAt <= turn.completedAt + 5000)) {
       const context = state.currentContext?.turnId === turn.turnId ? state.currentContext : turn;
-      const credits = usageCredits(increment, context.model, context.serviceTier);
+      let provider = resolvedTurnProvider(turn, state.threadModelProvider);
+      if (provider.providerAmbiguous && turn.tokenUsage?.totalTokens > 0 && !turn.providerAmbiguous) {
+        markProviderAmbiguous(turn, state, provider.providerSource);
+        provider = resolvedTurnProvider(turn, state.threadModelProvider);
+      }
+      const credits = provider.modelProvider === "openai"
+        ? usageCredits(increment, context.model, context.serviceTier) : null;
       turn.tokenUsage = addUsage(turn.tokenUsage, increment);
       turn.costCredits = (turn.costCredits || 0) + (credits || 0);
       turn.costTokens = (turn.costTokens || 0) + (credits === null ? 0 : increment.totalTokens);
       turn.costPartial ||= credits === null;
-      turn.costRateVersion = COST_RATE_VERSION;
+      if (credits !== null) turn.costRateVersion = COST_RATE_VERSION;
       turn.usageFirstAt ??= eventAt;
       turn.usageLastAt = eventAt;
       turn.usageSamples = (turn.usageSamples || 0) + 1;
       if (credits !== null) {
         state.usageCredits += credits;
         state.costTokens += increment.totalTokens;
+        if (turn.providerSource === "session_meta") {
+          state.sessionUsageCredits += credits;
+          state.sessionCostTokens += increment.totalTokens;
+          turn.sessionCostCredits = (turn.sessionCostCredits || 0) + credits;
+          turn.sessionCostTokens = (turn.sessionCostTokens || 0) + increment.totalTokens;
+          if (turn.providerObservedMatch) {
+            state.observedSessionUsageCredits += credits;
+            state.observedSessionCostTokens += increment.totalTokens;
+            turn.observedSessionCostCredits = (turn.observedSessionCostCredits || 0) + credits;
+            turn.observedSessionCostTokens = (turn.observedSessionCostTokens || 0) + increment.totalTokens;
+          }
+        }
       }
     }
     if (total !== null) state.tokens = total;
@@ -463,14 +715,54 @@ function newerLifecycle(current, candidate) {
     (current.completedAt ?? current.eventAt ?? 0) ? candidate : current;
 }
 
-function readLegacyRollout(file, diagnostics, { stat, previous, maxBytes = MAX_ROLLOUT_TAIL_BYTES } = {}) {
+function readInitialSessionMetadata(fd, stat, state) {
+  const chunks = [];
+  let bytesRead = 0;
+  while (bytesRead < Math.min(stat.size, MAX_ROLLOUT_LINE_BYTES)) {
+    const buffer = Buffer.allocUnsafe(Math.min(64 * 1024, stat.size - bytesRead,
+      MAX_ROLLOUT_LINE_BYTES - bytesRead));
+    const count = fs.readSync(fd, buffer, 0, buffer.length, bytesRead);
+    if (!count) break;
+    bytesRead += count;
+    const chunk = buffer.subarray(0, count);
+    const newline = chunk.indexOf(10);
+    chunks.push(newline < 0 ? chunk : chunk.subarray(0, newline));
+    if (newline < 0) continue;
+    try {
+      const row = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      if (row?.type === "session_meta") {
+        const metadata = {
+          modelProvider: providerId(row.payload?.model_provider ?? row.payload?.modelProvider),
+          timestamp: normalizeTimestamp(row.timestamp),
+        };
+        state.firstSessionMetadata = metadata;
+        state.sessionMetadata = metadata;
+      }
+    } catch {
+      // An unreadable header is missing evidence, never a default provider.
+    }
+    break;
+  }
+  return bytesRead;
+}
+
+function readLegacyRollout(file, diagnostics, { stat, previous, modelProvider,
+  maxBytes = MAX_ROLLOUT_TAIL_BYTES } = {}) {
   const state = {
     turns: new Map((previous?.lifecycleTurns || []).map((turn) => [turn.turnId || "__rollout_latest__", turn])),
     latestKey: previous?.latestTurn?.turnId || null,
     tokens: previous?.tokens ?? null,
     lastTokenUsage: previous?.lastTokenUsage ?? null,
     currentContext: previous?.currentContext ?? null,
+    threadModelProvider: providerId(modelProvider),
+    firstSessionMetadata: previous?.firstSessionMetadata ?? null,
+    sessionMetadata: previous?.sessionMetadata ?? null,
+    sessionHeaderInspected: previous?.sessionHeaderInspected ?? false,
     usageCredits: previous?.usageCredits ?? 0,
+    sessionUsageCredits: previous?.sessionUsageCredits ?? 0,
+    sessionCostTokens: previous?.sessionCostTokens ?? 0,
+    observedSessionUsageCredits: previous?.observedSessionUsageCredits ?? 0,
+    observedSessionCostTokens: previous?.observedSessionCostTokens ?? 0,
     usageEpoch: previous?.usageEpoch ?? randomUUID(),
     costTokens: previous?.costTokens ?? 0,
     tokenDelta: previous?.tokenDelta ?? null,
@@ -484,9 +776,16 @@ function readLegacyRollout(file, diagnostics, { stat, previous, maxBytes = MAX_R
     stat ||= fs.statSync(file);
     if (!stat.isFile()) throw new Error("rollout path is not a regular file");
     const savedOffset = previous?.readOffset ?? 0;
-    const start = Math.max(savedOffset, stat.size - maxBytes, 0);
-    state.readOffset = start;
+    let start = Math.max(savedOffset, stat.size - maxBytes, 0);
     fd = fs.openSync(file, "r");
+    if (start > 0 && !state.sessionHeaderInspected) {
+      // Keep a session header available when the lifecycle reader starts at a
+      // tail offset. Both reads share the same total byte budget.
+      state.bytesRead += readInitialSessionMetadata(fd, stat, state);
+      state.sessionHeaderInspected = true;
+      start = Math.max(savedOffset, stat.size - (maxBytes - state.bytesRead), 0);
+    }
+    state.readOffset = start;
     const buffer = Buffer.allocUnsafe(64 * 1024);
     let offset = start;
     let carry = Buffer.alloc(0);
@@ -555,7 +854,14 @@ function readLegacyRollout(file, diagnostics, { stat, previous, maxBytes = MAX_R
     tokens: state.tokens,
     lastTokenUsage: state.lastTokenUsage,
     currentContext: state.currentContext,
+    firstSessionMetadata: state.firstSessionMetadata,
+    sessionMetadata: state.sessionMetadata,
+    sessionHeaderInspected: state.sessionHeaderInspected,
     usageCredits: state.usageCredits,
+    sessionUsageCredits: state.sessionUsageCredits,
+    sessionCostTokens: state.sessionCostTokens,
+    observedSessionUsageCredits: state.observedSessionUsageCredits,
+    observedSessionCostTokens: state.observedSessionCostTokens,
     usageEpoch: state.usageEpoch,
     costTokens: state.costTokens,
     tokenDelta: state.tokenDelta,
@@ -565,21 +871,7 @@ function readLegacyRollout(file, diagnostics, { stat, previous, maxBytes = MAX_R
     updatedAt,
     latestTurn: latest,
     executionHistory: {
-      turns: lifecycleTurns.map((turn) => ({
-        turnId: turn.turnId,
-        startedAt: turn.startedAt,
-        completedAt: turn.completedAt,
-        durationMs: turn.durationMs ?? null,
-        status: statusClass(turn.status),
-        model: turn.model || null,
-        reasoningEffort: turn.reasoningEffort || null,
-        serviceTier: turn.serviceTier || null,
-        tokenUsage: turn.tokenUsage || null,
-        costCredits: turn.costTokens > 0 ? turn.costCredits : null,
-        costTokens: turn.costTokens || 0,
-        costRateVersion: turn.costRateVersion || null,
-        costCoverage: turn.usageStartSeen && !turn.costPartial ? "recorded-turn" : "partial-turn",
-      })),
+      turns: lifecycleTurns.map((turn) => executionTurnMetadata(turn, state.threadModelProvider)),
       intervals: lifecycleTurns
         .filter((turn) => statusClass(turn.status) === "idle")
         .map(intervalFromTurn)
@@ -589,6 +881,68 @@ function readLegacyRollout(file, diagnostics, { stat, previous, maxBytes = MAX_R
     },
     eventCount: state.eventCount,
     source: "rollout_jsonl",
+  };
+}
+
+function executionTurnMetadata(turn, threadModelProvider) {
+  const provider = resolvedTurnProvider(turn, threadModelProvider);
+  const hasCost = provider.modelProvider === "openai" && turn.costTokens > 0;
+  return {
+    turnId: turn.turnId,
+    startedAt: turn.startedAt,
+    completedAt: turn.completedAt,
+    durationMs: turn.durationMs ?? null,
+    status: statusClass(turn.status),
+    model: turn.model || null,
+    ...provider,
+    reasoningEffort: turn.reasoningEffort || null,
+    serviceTier: turn.serviceTier || null,
+    tokenUsage: turn.tokenUsage || null,
+    usageCoverage: turn.tokenUsage && turn.usageStartSeen && !turn.usagePartial
+      ? "recorded-turn" : "partial-turn",
+    costCredits: hasCost ? turn.costCredits : null,
+    costTokens: hasCost ? turn.costTokens : 0,
+    costRateVersion: hasCost ? turn.costRateVersion || null : null,
+    costCoverage: hasCost && turn.usageStartSeen && !turn.costPartial ? "recorded-turn" : "partial-turn",
+  };
+}
+
+function providerAdjustedRollout(rollout, threadModelProvider) {
+  // Remember evidence seen before a later provider switch. Only completed
+  // turns keep that historical match when the current thread provider changes.
+  for (const turn of rollout.lifecycleTurns) {
+    if (threadModelProvider && turn.modelProvider === threadModelProvider &&
+        turn.providerSource === "session_meta" && !turn.providerAmbiguous && !turn.providerObservedMatch) {
+      turn.providerObservedMatch = true;
+      rollout.observedSessionUsageCredits += (turn.sessionCostCredits || 0) - (turn.observedSessionCostCredits || 0);
+      rollout.observedSessionCostTokens += (turn.sessionCostTokens || 0) - (turn.observedSessionCostTokens || 0);
+      turn.observedSessionCostCredits = turn.sessionCostCredits || 0;
+      turn.observedSessionCostTokens = turn.sessionCostTokens || 0;
+    }
+  }
+  let usageCredits = rollout.usageCredits;
+  let costTokens = rollout.costTokens;
+  if (threadModelProvider && threadModelProvider !== "openai") {
+    usageCredits -= rollout.sessionUsageCredits - rollout.observedSessionUsageCredits;
+    costTokens -= rollout.sessionCostTokens - rollout.observedSessionCostTokens;
+    for (const turn of rollout.lifecycleTurns) {
+      if (resolvedTurnProvider(turn, threadModelProvider).providerAmbiguous) {
+        usageCredits -= turn.observedSessionCostCredits || 0;
+        costTokens -= turn.observedSessionCostTokens || 0;
+      }
+    }
+  }
+  return {
+    ...rollout,
+    usageCredits: costTokens > 0 ? Math.max(0, usageCredits) : null,
+    costTokens: Math.max(0, costTokens),
+    latestTurn: rollout.latestTurn ? {
+      ...rollout.latestTurn, ...resolvedTurnProvider(rollout.latestTurn, threadModelProvider),
+    } : null,
+    executionHistory: {
+      ...rollout.executionHistory,
+      turns: rollout.lifecycleTurns.map((turn) => executionTurnMetadata(turn, threadModelProvider)),
+    },
   };
 }
 
@@ -619,6 +973,8 @@ function latestTurnFromRow(row) {
   if (!row) return null;
   return {
     turnId: safeText(row.turn_id),
+    modelProvider: providerId(row.model_provider),
+    providerSource: providerId(row.model_provider) ? "thread_history" : null,
     status: safeText(row.status),
     startedAt: normalizeTimestamp(row.started_at),
     completedAt: normalizeTimestamp(row.completed_at),
@@ -678,6 +1034,8 @@ function executionHistoryFromRows(rows, partial = false) {
       completedAt: turn.completedAt,
       durationMs: turn.durationMs,
       status: statusClass(turn.status),
+      modelProvider: turn.modelProvider,
+      providerSource: turn.providerSource,
     })),
     intervals: intervals.sort((left, right) => left[0] - right[0] || left[1] - right[1]),
     coverage: partial || incompleteEvidence || !intervals.length ? "partial" : "local-records",
@@ -692,9 +1050,17 @@ function mergeExecutionHistory(projected, rollout) {
     const key = candidate.turnId || `at:${candidate.startedAt}`;
     const current = turns.get(key);
     const lifecycle = newerLifecycle(current, candidate);
-    const selected = candidate.costCredits > 0 ? { ...lifecycle,
+    const provider = candidate.providerSource === "turn_context" ||
+      candidate.providerSource === "mixed-turn-providers" || !current?.modelProvider
+      ? { modelProvider: candidate.modelProvider, providerSource: candidate.providerSource,
+          providerAmbiguous: candidate.providerAmbiguous }
+      : { modelProvider: current.modelProvider, providerSource: current.providerSource,
+          providerAmbiguous: current.providerAmbiguous };
+    const selected = candidate.tokenUsage || candidate.providerSource ? { ...lifecycle,
       model: candidate.model, reasoningEffort: candidate.reasoningEffort,
+      ...provider,
       serviceTier: candidate.serviceTier, tokenUsage: candidate.tokenUsage,
+      usageCoverage: candidate.usageCoverage,
       costCredits: candidate.costCredits, costTokens: candidate.costTokens,
       costRateVersion: candidate.costRateVersion, costCoverage: candidate.costCoverage,
     } : lifecycle;
@@ -929,12 +1295,12 @@ export class LocalReader {
     this.rolloutCache = new Map();
   }
 
-  readRollout(file, diagnostics, { bootstrap = false } = {}) {
+  readRollout(file, diagnostics, { bootstrap = false, modelProvider = null } = {}) {
     let stat;
     try {
       stat = fs.statSync(file);
     } catch {
-      return readLegacyRollout(file, diagnostics);
+      return readLegacyRollout(file, diagnostics, { modelProvider });
     }
     const cached = this.rolloutCache.get(file);
     if (cached && cached.dev === stat.dev && cached.ino === stat.ino && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) {
@@ -950,7 +1316,7 @@ export class LocalReader {
     const previous = sameFileAppend && stat.size - cached.result.readOffset <= maxBytes
       ? cached.result : null;
     const result = readLegacyRollout(file, diagnostics, {
-      stat, previous,
+      stat, previous, modelProvider,
       maxBytes,
     });
     if (result) {
@@ -1001,6 +1367,7 @@ export class LocalReader {
       truncated: false,
       returned: 0,
     };
+    const providerConfig = readProviderConfig(this.codexHome, diagnostics);
     const statePath = diagnostics.stateDb.path;
     const historyPath = diagnostics.historyDb.path;
     const stateDb = fs.existsSync(statePath)
@@ -1155,6 +1522,8 @@ export class LocalReader {
         let creditUsage = null;
         let costEpoch = null;
         let costTokens = null;
+        let sessionProviderMetadata = null;
+        const threadModelProvider = providerId(row.model_provider);
         let tokens = rowTokens(row.tokens_used);
         let tokensKnown = finiteNumber(row.tokens_used) !== null && finiteNumber(row.tokens_used) >= 0;
         let updatedAt = rowTimestamp(row) ?? now;
@@ -1178,16 +1547,23 @@ export class LocalReader {
         const projectedActivity = classifyActivity(latestTurn, now);
         const lifecycleAt = latestTurn?.completedAt ?? latestTurn?.startedAt ?? 0;
         const projectionLags = updatedAt > lifecycleAt + PROJECTION_LAG_MS;
-        const needsRollout = historyMode === "paginated" || !latestTurn || !tokensKnown ||
+        const customProvider = threadModelProvider && threadModelProvider !== "openai";
+        const needsRollout = customProvider || historyMode === "paginated" || !latestTurn || !tokensKnown ||
           projectedActivity.status === "unknown" || projectionLags || this.rolloutCache.has(rolloutPath);
         if (needsRollout && rolloutPath) {
-          const legacy = this.readRollout(rolloutPath, diagnostics, {
+          const recordedRollout = this.readRollout(rolloutPath, diagnostics, {
+            modelProvider: threadModelProvider,
             bootstrap: projectedActivity.status === "idle" && updatedAt > lifecycleAt + 60_000,
           });
-          if (legacy) {
+          if (recordedRollout) {
+            const legacy = providerAdjustedRollout(recordedRollout, threadModelProvider);
             creditUsage = legacy.usageCredits;
             costEpoch = legacy.usageEpoch;
             costTokens = legacy.costTokens;
+            sessionProviderMetadata = {
+              first: legacy.firstSessionMetadata,
+              latest: legacy.sessionMetadata,
+            };
             const selectedTurn = newerLifecycle(latestTurn, legacy.latestTurn);
             if (selectedTurn !== latestTurn) {
               latestTurn = selectedTurn;
@@ -1219,6 +1595,7 @@ export class LocalReader {
           id,
           title: safeTitle(row.name, row.title),
           model: safeText(row.model),
+          modelProvider: threadModelProvider,
           reasoningEffort: safeText(row.reasoning_effort),
           parentThreadId: sourceInfo.parentThreadId,
           createdAt: normalizeTimestamp(row.created_at_ms) ?? normalizeTimestamp(row.created_at),
@@ -1240,6 +1617,7 @@ export class LocalReader {
             eventCount,
           }),
           executionHistory,
+          sessionProviderMetadata,
         };
         if (executionHistory.coverage === "partial") {
           diagnostics.executionHistoryPartialThreads += 1;
@@ -1256,13 +1634,13 @@ export class LocalReader {
       diagnostics.ok =
         diagnostics.errors.length === 0 &&
         diagnostics.incompatible.length === 0;
-      return { threads: output, diagnostics };
+      return { threads: output, providerConfig, diagnostics };
     } catch (error) {
       diagnostics.errors.push(
         `reader: ${String(error?.message || error)}`.slice(0, 500),
       );
       diagnostics.ok = false;
-      return { threads: [], diagnostics };
+      return { threads: [], providerConfig, diagnostics };
     } finally {
       try {
         stateDb?.close();

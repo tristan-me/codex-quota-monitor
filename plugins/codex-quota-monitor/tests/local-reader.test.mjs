@@ -1007,6 +1007,7 @@ test('recorded token cost respects each turn model and skips repeated counters a
   const first=usage(1000,900,100), second=usage(2000,1800,200);
   const count=(at,total,last)=>event(at,'event_msg',{type:'token_count',info:{total_token_usage:total,last_token_usage:last}});
   await fs.writeFile(file,
+    event(now-21000,'session_meta',{model_provider:'openai'})+
     event(now-20000,'event_msg',{type:'task_started',turn_id:'astra-turn'})+
     event(now-19500,'turn_context',{turn_id:'astra-turn',model:'gpt-6-astra',effort:'max',developer_instructions:'DO-NOT-RETAIN-PRIVATE-CONTENT'})+
     count(now-19000,first,first)+count(now-18500,first,first)+

@@ -2,6 +2,10 @@
 
 Codex Quota Monitor is a Codex plugin that shows how much quota remains, what each task may have used, and how long your quota might last at the current pace. Monitoring itself does not consume Codex quota. Codex conversations used to install, open or discuss the plugin, and the tasks being monitored, still consume quota normally. Account balances are official; task values and runtime predictions are estimates.
 
+Use the **Monitoring source** selector at the top to switch between your **Codex account, Muse, and other custom APIs configured in the desktop app**. It initially selects the desktop's current provider and changes only the monitoring view. API views separately show recorded input, cached input, output, and total tokens. They do not invent monetary costs or quota percentages when trusted provider pricing and balance data are unavailable.
+
+When a task changes providers, identifiable executions remain separate and ambiguous history appears under **Unknown historical provider**. Later continuously observed increments are assigned to the provider observed at the time and marked as partial; offline usage is not guessed. Existing statistics are backed up before migration. Unproven Codex allocations become unattributed while official account consumption stays intact. Configure custom APIs in the desktop app first; the monitor reads provider labels and usage without asking for API keys again.
+
 [中文 README](./README.md) · [Diagnosis guide](./docs/diagnosis.md) · [Validation notes](./docs/validation.md)
 
 ## Quick start

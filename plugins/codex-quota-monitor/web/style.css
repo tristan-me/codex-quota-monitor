@@ -199,6 +199,72 @@ button:disabled {
   gap: 10px;
 }
 
+.provider-bar {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  margin-bottom: 18px;
+  padding: 14px 18px;
+  background: rgba(17, 27, 47, 0.76);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+}
+
+.provider-control {
+  display: grid;
+  grid-template-columns: auto minmax(150px, 220px);
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  flex: 0 1 280px;
+}
+
+.provider-control .field-label {
+  white-space: nowrap;
+}
+
+.provider-control .provider-select {
+  min-width: 0;
+  padding-right: 30px;
+  font-size: 12px;
+  text-overflow: ellipsis;
+}
+
+.provider-context {
+  min-width: 0;
+  flex: 1;
+}
+
+.provider-context-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  margin-bottom: 5px;
+  overflow-wrap: anywhere;
+}
+
+.provider-badge {
+  max-width: 100%;
+  padding: 3px 9px;
+  color: #b9f8e7;
+  background: rgba(57, 191, 153, 0.1);
+  border: 1px solid rgba(100, 228, 192, 0.23);
+  border-radius: 8px;
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.provider-active,
+.provider-selection-status {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.provider-selection-status.is-error {
+  color: var(--danger);
+}
+
 .connection-pill,
 .recommendation-badge,
 .radar-pulse {
@@ -706,6 +772,90 @@ button:disabled {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.api-provider .hero h1,
+.api-usage-range {
+  overflow-wrap: anywhere;
+}
+
+.api-usage-range {
+  margin: 14px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.65;
+}
+
+.api-hero-metrics .metric-card {
+  min-width: 0;
+}
+
+.api-hero-metrics .metric-value {
+  font-size: clamp(18px, 2.25vw, 28px);
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
+.api-token-coverage {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--text-soft);
+  font-size: 11px;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+
+.api-task-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin: 13px 0 0;
+}
+
+.api-task-metric {
+  min-width: 0;
+  padding: 9px 11px;
+  background: rgba(126, 149, 193, 0.065);
+  border-radius: 8px;
+}
+
+.api-task-metric dt {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.api-task-metric dd {
+  margin: 3px 0 0;
+  color: var(--text-soft);
+  font-size: 16px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.api-task-metric:last-child dd {
+  color: var(--accent);
+}
+
+.api-task-detail,
+.api-task-unclassified {
+  margin: 11px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+
+.api-task-unclassified {
+  color: var(--text-soft);
+}
+
+.api-task-partial {
+  color: var(--warning);
+}
+
+.api-provider .diagnostics-panel {
+  grid-column: 1 / -1;
 }
 
 .dashboard-grid {
@@ -2414,6 +2564,22 @@ path.trend-line-unattributed { stroke: var(--warning); }
 
 @media (max-width: 760px) {
   .reset-grid { grid-template-columns: 1fr; }
+  .provider-bar {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 12px;
+    padding: 14px;
+  }
+
+  .provider-control {
+    grid-template-columns: auto minmax(0, 1fr);
+    flex-basis: auto;
+  }
+
+  .api-task-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .app-shell {
     width: min(100% - 28px, 620px);
     padding-top: 16px;
