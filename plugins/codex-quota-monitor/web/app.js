@@ -951,7 +951,8 @@ import { createSessionChart, renderQuotaTrend, renderAttributionScopes } from '.
 
   function appendSessionChart(row, entry, snapshot) {
     const chart = createSessionChart(snapshot.sessionCharts?.[entry.id], {
-      id: entry.id, formatPercent: formatTaskPercent, formatDuration,
+      id: entry.id, preferenceKey: `${providerSelectionFrom(snapshot).selected.id}:${entry.id}`,
+      formatPercent: formatTaskPercent, formatDuration,
     });
     if (chart) row.append(chart);
   }

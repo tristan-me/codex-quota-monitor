@@ -4,11 +4,14 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
 const MODE_KEY = 'codexQuotaMonitor.trendMode';
 const SCOPE_KEY = 'codexQuotaMonitor.attributionScope';
 const POINT_KEY = 'codexQuotaMonitor.trendPoint';
+const SESSION_CHART_KEY = 'codexQuotaMonitor.sessionChartExpanded.';
 const boundModes = new WeakSet();
 const boundScopes = new WeakSet();
 const sessionColors = new Map();
+const sessionChartPreferences = new Map();
 const palette = ['#66b3ff', '#63d7b0', '#ecac64', '#bc9aff', '#ed8aba', '#75d3e6', '#ced57c', '#e58978'];
 let tooltipSequence = 0;
+let sessionChartSequence = 0;
 let activeTooltip = null;
 let tooltipEventsBound = false;
 let latestTrendSnapshot = null;
@@ -118,32 +121,21 @@ function colorsFor(chartId, segments) {
   return colors;
 }
 
-function executionLanes(segments) {
+function executionGroups(segments) {
   const groups = [];
   for (const segment of [...segments].sort((a, b) => a.points[0].at - b.points[0].at)) {
-    const start = segment.points[0].at;
-    const end = segment.points.at(-1).at;
+    const start = segment.points[0];
+    const end = segment.points.at(-1);
     let group = groups.at(-1);
-    if (!group || start > group.end || (start === group.end && end > start)) { group = { end, members: [] }; groups.push(group); }
-    group.members.push(segment);
-    group.end = Math.max(group.end, end);
-  }
-  const result = new Map();
-  for (const group of groups) {
-    const lanes = [];
-    const assigned = [];
-    for (const segment of group.members) {
-      const start = segment.points[0].at;
-      const instantaneous = segment.points.at(-1).at === start;
-      let lane = lanes.findIndex(end => end < start || (end === start && !instantaneous));
-      if (lane < 0) lane = lanes.length;
-      lanes[lane] = segment.points.at(-1).at;
-      assigned.push([segment.id, lane]);
+    if (!group || start.at > group.end.at) {
+      group = { start, end, endId: segment.id };
+      groups.push(group);
+    } else if (end.at > group.end.at || (end.at === group.end.at && end.value > group.end.value)) {
+      group.end = end;
+      group.endId = segment.id;
     }
-    const spacing = Math.min(2, 8 / Math.max(1, lanes.length - 1));
-    assigned.forEach(([id, lane]) => result.set(id, { offset: (lane - (lanes.length - 1) / 2) * spacing, concurrent: lanes.length > 1 }));
   }
-  return result;
+  return groups;
 }
 
 const linearized = segment => segment.linearized === true || /^linear(?:-|$)/.test(textValue(segment.interpolation));
@@ -250,7 +242,7 @@ function addAxes(svg, { width, height, padding, maximum, firstAt, lastAt, label 
 }
 
 /** A task's cumulative consumption, with one independently identifiable color per execution. */
-export function createSessionChart(chart, { id = '', formatPercent = percent, formatDuration = duration } = {}) {
+export function createSessionChart(chart, { id = '', preferenceKey = id, formatPercent = percent, formatDuration = duration } = {}) {
   const container = element('div', 'session-chart');
   container.setAttribute('role', 'group');
   const tokenUnit = chart?.unit === 'tokens' || chart?.unit === 'token';
@@ -275,57 +267,97 @@ export function createSessionChart(chart, { id = '', formatPercent = percent, fo
   const lastAt = Math.max(...points.map(point => point.at));
   const rawMaximum = Math.max(0, ...points.map(point => point.value));
   const maximum = rawMaximum > 0 ? rawMaximum * 1.12 : 1;
-  const width = Math.max(320, Math.min(1100, (byId('sessionList')?.clientWidth || 500) - 50));
-  const height = 118;
-  const padding = { top: 10, right: 12, bottom: 24, left: tokenUnit ? 54 : 52 };
-  const x = at => padding.left + (lastAt > firstAt ? (at - firstAt) / (lastAt - firstAt) : 0.5) * (width - padding.left - padding.right);
-  const y = value => padding.top + (1 - value / maximum) * (height - padding.top - padding.bottom);
-  const svg = svgElement('svg', { viewBox: `0 0 ${width} ${height}`, class: 'session-chart-svg', role: 'group', 'aria-label': container.getAttribute('aria-label') });
-  svg.append(svgElement('title', {}, '悬停或聚焦执行线段、采样点可查看耗时和消耗'));
-  addAxes(svg, { width, height, padding, maximum, firstAt, lastAt, label: tokenUnit ? value => {
-    if (value >= 1000000) return `${(value / 1000000).toFixed(1)}M`;
-    if (value >= 1000) return `${(value / 1000).toFixed(1)}k`;
-    return Math.round(value).toLocaleString('zh-CN');
-  } : formatPercent });
   const colors = colorsFor(String(id || plotted[0].taskId || plotted[0].id), segments);
-  const lanes = executionLanes(plotted);
+  const groups = executionGroups(plotted);
+  const storageKey = SESSION_CHART_KEY + encodeURIComponent(String(preferenceKey || id || plotted[0].taskId || plotted[0].id));
+  if (!sessionChartPreferences.has(storageKey)) sessionChartPreferences.set(storageKey, readPreference(storageKey, ['true', 'false'], 'false') === 'true');
+  let expanded = sessionChartPreferences.get(storageKey);
+  const plot = element('div', 'session-chart-plot');
+  plot.id = `session-chart-plot-${++sessionChartSequence}`;
+  const toggle = element('button', 'session-chart-toggle');
+  toggle.setAttribute('type', 'button');
+  toggle.setAttribute('aria-controls', plot.id);
+  container.append(plot, toggle);
   const popup = tooltip(container);
-  plotted.forEach((segment, index) => {
-    const color = colors.get(segment.id);
-    const lane = lanes.get(segment.id);
-    const executionY = value => y(value) + lane.offset;
-    const notes = [linearized(segment) ? '轮次内曲线按执行起止时间线性估算；耗时以实际执行记录为准。' : '',
-      lane.concurrent ? '并行执行的曲线略微错开以便辨识。' : '',
-      !tokenUnit ? '额度为会话归因估算。' : '', chart?.partial ? '仅包含可用的历史记录。' : ''].filter(Boolean).join('');
-    const rows = [
-      ['实际执行耗时', formatDuration(segment.elapsedSeconds, '未记录')],
-      [tokenUnit ? '本次 token 消耗' : '本次消耗', amount(segment.amount)],
-      ...(!tokenUnit ? [['平均每 1% 耗时', formatDuration(segment.secondsPerPercent, '待估算')]] : []),
-      ['开始', formatTime(segment.started, true)],
-      ['结束', segment.completed === null ? '执行中 / 未记录结束' : formatTime(segment.completed, true)],
-    ];
-    const content = { title: `第 ${index + 1} 次执行${segment.title ? ` · ${segment.title}` : ''}`, rows, note: notes };
-    const group = svgElement('g', { class: 'chart-interaction session-chart-segment', tabindex: '0', role: 'img', 'data-segment-id': segment.id, 'data-execution-offset': lane.offset });
-    group.style.setProperty('--execution-color', color);
-    const d = pathData(segment.points, x, executionY);
-    group.append(svgElement('path', { d, class: 'session-chart-line', fill: 'none', stroke: color, 'stroke-width': 2.5, 'vector-effect': 'non-scaling-stroke' }),
-      svgElement('path', { d, class: 'chart-hit-target', fill: 'none', stroke: 'transparent', 'stroke-width': lane.concurrent ? 2 : 14, 'pointer-events': 'stroke', 'vector-effect': 'non-scaling-stroke' }));
-    popup.bind(group, content);
-    svg.append(group);
-    for (const point of segment.points) {
-      const control = svgElement('g', { class: 'chart-interaction session-chart-point-control', tabindex: '0', role: 'img', 'data-segment-id': segment.id });
-      control.style.setProperty('--execution-color', color);
-      control.append(svgElement('circle', { cx: x(point.at), cy: executionY(point.value), r: lane.concurrent ? 2 : 3, fill: color, class: 'session-chart-point' }),
-        svgElement('circle', { cx: x(point.at), cy: executionY(point.value), r: lane.concurrent ? 2 : 8, fill: 'transparent', class: 'chart-hit-target', 'pointer-events': 'all' }));
-      popup.bind(control, { ...content, rows: [['图中时间', formatTime(point.at, true)], ['任务累计消耗', amount(point.value)], ...rows] });
-      svg.append(control);
+  const draw = () => {
+    if (activeTooltip?.owner === container) activeTooltip.hide();
+    container.classList.toggle('is-expanded', expanded);
+    toggle.setAttribute('aria-expanded', String(expanded));
+    toggle.textContent = expanded ? '收起折线图' : '展开折线图';
+    const width = expanded ? Math.max(320, Math.min(1100, (byId('sessionList')?.clientWidth || 500) - 50)) : 176;
+    const height = expanded ? 118 : 60;
+    const padding = expanded ? { top: 10, right: 12, bottom: 24, left: tokenUnit ? 54 : 52 }
+      : { top: 6, right: 6, bottom: 6, left: 6 };
+    const x = at => padding.left + (lastAt > firstAt ? (at - firstAt) / (lastAt - firstAt) : 0.5) * (width - padding.left - padding.right);
+    const y = value => padding.top + (1 - value / maximum) * (height - padding.top - padding.bottom);
+    const svg = svgElement('svg', { viewBox: `0 0 ${width} ${height}`, class: 'session-chart-svg', role: 'group', 'aria-label': container.getAttribute('aria-label') });
+    svg.append(svgElement('title', {}, '悬停或聚焦执行线段、采样点可查看耗时和消耗；横轴保留实际时间间隔'));
+    if (expanded) addAxes(svg, { width, height, padding, maximum, firstAt, lastAt, label: tokenUnit ? value => {
+      if (value >= 1000000) return `${(value / 1000000).toFixed(1)}M`;
+      if (value >= 1000) return `${(value / 1000).toFixed(1)}k`;
+      return Math.round(value).toLocaleString('zh-CN');
+    } : formatPercent });
+
+    for (let index = 1; index < groups.length; index += 1) {
+      const start = groups[index - 1].end;
+      const end = groups[index].start;
+      const unchanged = Math.abs(end.value - start.value) <= Number.EPSILON * Math.max(1, start.value, end.value) * 8;
+      const d = pathData([start, end], x, y);
+      const connector = svgElement('g', { class: 'chart-interaction session-chart-connector', tabindex: '0', role: 'img', 'data-start-at': start.at, 'data-end-at': end.at });
+      connector.append(svgElement('path', { d, class: 'session-chart-connector-line', fill: 'none', stroke: unchanged ? colors.get(groups[index - 1].endId) : 'var(--muted, #8493a8)', 'stroke-width': 2.5,
+        'stroke-dasharray': unchanged ? 'none' : '4 3', 'vector-effect': 'non-scaling-stroke' }),
+        svgElement('path', { d, class: 'chart-hit-target', fill: 'none', stroke: 'transparent', 'stroke-width': 12, 'pointer-events': 'stroke', 'vector-effect': 'non-scaling-stroke' }));
+      popup.bind(connector, {
+        title: '执行间隔',
+        rows: [['间隔开始', formatTime(start.at, true)], ['间隔结束', formatTime(end.at, true)],
+          ['经过时间', formatDuration((end.at - start.at) / 1000, '未记录')],
+          ['开始累计消耗', amount(start.value)], ['结束累计消耗', amount(end.value)]],
+        note: unchanged ? '已记录的累计消耗未变化；连线不代表新增消耗。'
+          : '间隔内缺少执行明细，虚线仅连接已知累计值，不据此新增消耗。',
+      });
+      svg.append(connector);
     }
+    plotted.forEach((segment, index) => {
+      const color = colors.get(segment.id);
+      const notes = [linearized(segment) ? '轮次内曲线按执行起止时间线性估算；耗时以实际执行记录为准。' : '',
+        !tokenUnit ? '额度为会话归因估算。' : '', chart?.partial ? '仅包含可用的历史记录。' : ''].filter(Boolean).join('');
+      const rows = [
+        ['实际执行耗时', formatDuration(segment.elapsedSeconds, '未记录')],
+        [tokenUnit ? '本次 token 消耗' : '本次消耗', amount(segment.amount)],
+        ...(!tokenUnit ? [['平均每 1% 耗时', formatDuration(segment.secondsPerPercent, '待估算')]] : []),
+        ['开始', formatTime(segment.started, true)],
+        ['结束', segment.completed === null ? '执行中 / 未记录结束' : formatTime(segment.completed, true)],
+      ];
+      const content = { title: `第 ${index + 1} 次执行${segment.title ? ` · ${segment.title}` : ''}`, rows, note: notes };
+      const group = svgElement('g', { class: 'chart-interaction session-chart-segment', tabindex: '0', role: 'img', 'data-segment-id': segment.id });
+      group.style.setProperty('--execution-color', color);
+      const d = pathData(segment.points, x, y);
+      group.append(svgElement('path', { d, class: 'session-chart-line', fill: 'none', stroke: color, 'stroke-width': 2.5, 'vector-effect': 'non-scaling-stroke' }),
+        svgElement('path', { d, class: 'chart-hit-target', fill: 'none', stroke: 'transparent', 'stroke-width': 14, 'pointer-events': 'stroke', 'vector-effect': 'non-scaling-stroke' }));
+      popup.bind(group, content);
+      svg.append(group);
+      for (const point of segment.points) {
+        const control = svgElement('g', { class: 'chart-interaction session-chart-point-control', tabindex: '0', role: 'img', 'data-segment-id': segment.id });
+        control.style.setProperty('--execution-color', color);
+        control.append(svgElement('circle', { cx: x(point.at), cy: y(point.value), r: expanded ? 3 : 2, fill: color, class: 'session-chart-point' }),
+          svgElement('circle', { cx: x(point.at), cy: y(point.value), r: expanded ? 8 : 5, fill: 'transparent', class: 'chart-hit-target', 'pointer-events': 'all' }));
+        popup.bind(control, { ...content, rows: [['图中时间', formatTime(point.at, true)], ['任务累计消耗', amount(point.value)], ...rows] });
+        svg.append(control);
+      }
+    });
+    plot.replaceChildren(svg);
+    if (expanded && (chart?.partial || plotted.some(linearized))) {
+      plot.append(element('p', 'session-chart-caption', [chart?.partial ? '仅含可用记录' : '',
+        plotted.some(linearized) ? '轮次内走势为线性估算' : ''].filter(Boolean).join(' · ')));
+    }
+  };
+  toggle.addEventListener('click', () => {
+    expanded = !expanded;
+    sessionChartPreferences.set(storageKey, expanded);
+    savePreference(storageKey, String(expanded));
+    draw();
   });
-  container.prepend(svg);
-  if (chart?.partial || plotted.some(linearized)) {
-    container.append(element('p', 'session-chart-caption', [chart?.partial ? '仅含可用记录' : '',
-      plotted.some(linearized) ? '轮次内走势为线性估算' : ''].filter(Boolean).join(' · ')));
-  }
+  draw();
   return container;
 }
 

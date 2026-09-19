@@ -2848,6 +2848,25 @@ body.session-drag-active { user-select:none; cursor:grabbing; }
 .session-row.is-drop-before { border-top:3px solid var(--accent); }
 .session-row.is-drop-after { border-bottom:3px solid var(--accent); }
 .session-chart { margin-top:14px; border-top:1px solid var(--border); padding-top:12px; position:relative; }
+.session-row:has(> .session-chart) { display:grid; grid-template-columns:minmax(0,1fr) 176px; column-gap:18px; }
+.session-row:has(> .session-chart) > * { grid-column:1; min-width:0; }
+.session-row > .session-chart:not(.is-expanded) { grid-column:2; grid-row:1 / span 3; align-self:center; margin:0; padding:0; border:0; }
+.session-row:has(> .session-chart.is-expanded) { grid-template-columns:minmax(0,1fr); }
+.session-row > .session-chart.is-expanded,
+.session-row > .session-child-list,
+.session-row > .session-child-toggle { grid-column:1 / -1; }
+.session-child-toggle { justify-self:start; }
+.session-chart:not(.is-expanded) .session-chart-svg { width:100%; height:60px; }
+.session-chart-toggle { display:block; margin:2px 0 0 auto; padding:3px 6px; border:0; border-radius:5px; background:transparent; color:var(--accent-blue); font:inherit; font-size:11px; cursor:pointer; }
+.session-chart-toggle:hover { background:rgba(126,149,193,.1); }
+.session-chart-toggle:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.session-chart.is-expanded .session-chart-toggle { margin-bottom:5px; }
+.session-chart-connector { stroke-linecap:round; }
+@media(max-width:600px) {
+  .session-row:has(> .session-chart:not(.is-expanded)) { grid-template-columns:minmax(0,1fr) 124px; column-gap:10px; }
+  .session-row:has(> .session-chart:not(.is-expanded)) > .session-row-header { grid-column:1 / -1; }
+  .session-row > .session-chart:not(.is-expanded) { grid-row:2 / span 2; }
+}
 .session-chart-header { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; color:var(--muted); font-size:11px; }
 .session-chart-svg { display:block; width:100%; height:150px; overflow:visible; }
 .session-chart-line { fill:none; stroke-width:2.5; vector-effect:non-scaling-stroke; cursor:crosshair; }
