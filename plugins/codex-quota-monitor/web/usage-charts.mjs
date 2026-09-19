@@ -283,7 +283,8 @@ export function createSessionChart(chart, { id = '', preferenceKey = id, formatP
   const rawMaximum = Math.max(0, ...points.map(point => point.value));
   const maximum = rawMaximum > 0 ? rawMaximum * 1.12 : 1;
   const colors = colorsFor(String(id || plotted[0].taskId || plotted[0].id), segments);
-  const runtime = createSessionRuntimeAxis(plotted.map(segment => [segment.points[0].at, segment.points.at(-1).at]));
+  const runtime = createSessionRuntimeAxis(plotted.flatMap(segment => Array.isArray(segment.runningIntervals)
+    ? segment.runningIntervals : [[segment.points[0].at, segment.points.at(-1).at]]));
   const storageKey = SESSION_CHART_KEY + encodeURIComponent(String(preferenceKey || id || plotted[0].taskId || plotted[0].id));
   if (!sessionChartPreferences.has(storageKey)) sessionChartPreferences.set(storageKey, readPreference(storageKey, ['true', 'false'], 'false') === 'true');
   let expanded = sessionChartPreferences.get(storageKey);
@@ -316,9 +317,11 @@ export function createSessionChart(chart, { id = '', preferenceKey = id, formatP
     plotted.forEach((segment, index) => {
       const color = colors.get(segment.id);
       const notes = [linearized(segment) ? '轮次内曲线按执行起止时间线性估算；耗时以实际执行记录为准。' : '',
+        tokenUnit && segment.durationScope === 'full-turn' && ['provider-observed', 'provider-prefix'].includes(segment.usageScope)
+          ? '耗时为整轮执行，token 仅包含当前供应商已记录部分。' : '',
         !tokenUnit ? '额度为会话归因估算。' : '', chart?.partial ? '仅包含可用的历史记录。' : ''].filter(Boolean).join('');
       const rows = [
-        ['实际执行耗时', formatDuration(segment.elapsedSeconds, '未记录')],
+        [segment.durationScope === 'observed-intervals' ? '已观察时长' : '实际执行耗时', formatDuration(segment.elapsedSeconds, '未记录')],
         [tokenUnit ? '本次 token 消耗' : '本次消耗', amount(segment.amount)],
         ...(!tokenUnit ? [['平均每 1% 耗时', formatDuration(segment.secondsPerPercent, '待估算')]] : []),
         ['开始', formatTime(segment.started, true)],

@@ -276,21 +276,38 @@ export function buildSessionSegments(records, { unit = 'percent', now, partial =
     const elapsedSeconds = Object.hasOwn(record, 'elapsedSeconds')
       ? finite(record.elapsedSeconds) && record.elapsedSeconds >= 0 ? record.elapsedSeconds : null
       : (endAt - record.startedAt) / 1000;
+    let runningIntervals;
+    if (Array.isArray(record.runningIntervals)) {
+      runningIntervals = [];
+      for (const span of record.runningIntervals.filter(span => Array.isArray(span) && finite(span[0]) && finite(span[1]))
+        .map(([a,b]) => [Math.max(a,record.startedAt),Math.min(b,endAt)])
+        .filter(([a,b]) => b >= a).sort((a,b) => a[0]-b[0])) {
+        const previous = runningIntervals.at(-1);
+        if (previous && span[0] <= previous[1]) previous[1] = Math.max(previous[1],span[1]);
+        else runningIntervals.push(span);
+      }
+      if (!runningIntervals.length) { partial = true; continue; }
+    }
     unique.set(id, { ...record, id, endAt, elapsedSeconds,
+      ...(runningIntervals ? { runningIntervals } : {}),
       completedAt: finite(record.completedAt) && record.completedAt <= endAt ? record.completedAt : null });
   }
   const all = [...unique.values()].sort((a, b) => a.startedAt - b.startedAt || a.id.localeCompare(b.id));
   const kept = all.slice(-MAX_SEGMENTS);
-  const times = [...new Set(all.flatMap(record => [record.startedAt, record.endAt]))].sort((a, b) => a - b);
+  const spansFor = record => record.runningIntervals || [[record.startedAt, record.endAt]];
+  const times = [...new Set(all.flatMap(record => [record.startedAt, record.endAt, ...spansFor(record).flat()]))].sort((a, b) => a - b);
   const changes = new Map();
   for (const record of all) {
-    if (record.endAt === record.startedAt) continue;
-    const slope = record.amount / (record.endAt - record.startedAt);
-    changes.set(record.startedAt, (changes.get(record.startedAt) || 0) + slope);
-    changes.set(record.endAt, (changes.get(record.endAt) || 0) - slope);
+    const spans = spansFor(record), runningMs = spans.reduce((total,[a,b]) => total+b-a,0);
+    if (runningMs === 0) continue;
+    const slope = record.amount / runningMs;
+    for (const [a,b] of spans) {
+      changes.set(a, (changes.get(a) || 0) + slope);
+      changes.set(b, (changes.get(b) || 0) - slope);
+    }
   }
   const jumps = new Map();
-  for (const record of all.filter(record => record.endAt === record.startedAt))
+  for (const record of all.filter(record => spansFor(record).every(([a,b]) => a===b)))
     jumps.set(record.startedAt, (jumps.get(record.startedAt) || 0) + record.amount);
   let value = 0, slope = 0, previousAt = times[0];
   const timeline = times.map(at => {

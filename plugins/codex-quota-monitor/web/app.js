@@ -1141,8 +1141,9 @@ import { createSessionChart, renderQuotaTrend, renderAttributionScopes } from '.
         row.append(textElement('p', 'api-task-unclassified', `未分类 token：${formatTokenCount(session.unclassifiedTokens)}，已计入合计，未列入输入/输出拆分。`));
       }
       const hasUsage = hasRecordedApiUsage(session);
+      const durationLabel = session.durationScope === 'full-turn' ? '任务运行耗时' : '已知运行耗时';
       const details = [
-        `已记录耗时 ${hasUsage ? formatDuration(session.totalElapsedSeconds, '未记录') : '—'}`,
+        `${durationLabel} ${hasUsage ? formatDuration(session.totalElapsedSeconds, '未记录') : '—'}`,
         hasUsage ? `已记录 ${formatTokenCount(session.turnCount)} 轮` : '轮次未记录',
       ];
       if (parseDate(session.startedAt)) details.push(`开始 ${formatDate(session.startedAt)}`);

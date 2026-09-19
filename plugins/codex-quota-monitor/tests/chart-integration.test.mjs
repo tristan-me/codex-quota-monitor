@@ -117,9 +117,10 @@ test('API chart totals partition sampled suffixes and unknown history, then repl
   const unknown = ledger.apiSnapshot('unknown', start + 101_000);
   assert.equal(api.summary.totalTokens, 70);
   assert.equal(unknown.summary.totalTokens, 170);
-  assert.equal(api.sessionCharts['sampled-task'].segments.length, 2);
+  assert.equal(api.sessionCharts['sampled-task'].segments.length, 1);
   assert.equal(api.sessionCharts['sampled-task'].partial, true);
-  assert.equal(api.sessions[0].totalElapsedSeconds, 2);
+  assert.equal(api.sessions[0].totalElapsedSeconds, 101);
+  assert.equal(api.sessions[0].observedElapsedSeconds, 2);
   assertApiConservation(api);
   assertApiConservation(unknown);
   near(api.summary.totalTokens + unknown.summary.totalTokens, 240);

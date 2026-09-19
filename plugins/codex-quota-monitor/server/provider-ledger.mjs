@@ -14,6 +14,39 @@ const intervalSeconds = intervals => {
   }
   return result;
 };
+const terminal = status => ['idle', 'completed', 'complete', 'aborted', 'interrupted', 'failed', 'error'].includes(status);
+const turnStart = turn => Number.isFinite(turn?.startedAt) ? turn.startedAt
+  : Number.isFinite(turn?.completedAt) && Number.isFinite(turn.durationMs) && turn.durationMs > 0 ? turn.completedAt - turn.durationMs : null;
+function mergedIntervals(intervals, now) {
+  const result = [];
+  for (const [start, end] of (intervals || []).filter(span => Array.isArray(span) &&
+      Number.isFinite(span[0]) && Number.isFinite(span[1]))
+    .map(([start, end]) => [start, Math.min(end, now)])
+    .filter(([start, end]) => end >= start).sort((a, b) => a[0] - b[0])) {
+    const previous = result.at(-1);
+    if (previous && start <= previous[1]) previous[1] = Math.max(previous[1], end);
+    else result.push([start, end]);
+  }
+  return result;
+}
+function executionTiming(task, key, now) {
+  const turn = task.turns[key];
+  const startedAt = turnStart(turn);
+  if (!Number.isFinite(startedAt) || startedAt > now) return null;
+  let completedAt = Number.isFinite(turn.completedAt) ? turn.completedAt : null;
+  if (completedAt === null && terminal(turn.status) && Number.isFinite(turn.durationMs) && turn.durationMs > 0)
+    completedAt = startedAt + turn.durationMs;
+  if (completedAt !== null && completedAt >= startedAt && completedAt <= now) return {
+    startedAt, completedAt, endAt: completedAt,
+    elapsedSeconds: Number.isFinite(turn.durationMs) && turn.durationMs > 0 ? turn.durationMs / 1000 : (completedAt - startedAt) / 1000,
+    durationScope: 'full-turn',
+  };
+  if (completedAt === null && task.status === 'active' && task.currentKey === key) return {
+    startedAt, completedAt: null, endAt: now, elapsedSeconds: (now - startedAt) / 1000,
+    durationScope: 'full-turn',
+  };
+  return null;
+}
 
 export class ProviderLedger {
   constructor(saved = {}) {
@@ -28,8 +61,10 @@ export class ProviderLedger {
       const turns={};
       for(const turn of thread.usageTurns || []) {
         const usage=tokenUsage(turn.tokenUsage);
-        if(!usage || !Number.isFinite(turn.startedAt)) continue;
-        turns[turnKey(turn)]={turnId:turn.turnId,startedAt:turn.startedAt,completedAt:turn.completedAt,
+        const startedAt = turnStart(turn);
+        if(!usage || !Number.isFinite(startedAt)) continue;
+        turns[turnKey({...turn,startedAt})]={turnId:turn.turnId,startedAt,completedAt:turn.completedAt,
+          durationMs:turn.durationMs,status:turn.status,
           model:turn.model,reasoningEffort:turn.reasoningEffort,modelProvider:null,
           providerSource:'legacy-unverified',tokenUsage:usage,partial:turn.costCoverage==='partial-turn'};
       }
@@ -54,8 +89,9 @@ export class ProviderLedger {
         status: thread.status, startedAt: thread.startedAt, completedAt: thread.completedAt,
         currentKey: currentKey(thread), lastSeenAt: now });
       for (const turn of [...(thread.usageTurns || []), ...(thread.executionHistory?.turns || [])]) {
-        if (!Number.isFinite(turn.startedAt)) continue;
-        const key = turnKey(turn), old = task.turns[key];
+        const startedAt = turnStart(turn);
+        if (!Number.isFinite(startedAt)) continue;
+        const key = turnKey({...turn,startedAt}), old = task.turns[key];
         const usage = tokenUsage(turn.tokenUsage);
         const provider = normalizeProvider(turn.modelProvider);
         if (old?.modelProvider && !provider && old.tokenUsage &&
@@ -66,10 +102,12 @@ export class ProviderLedger {
             prefixes[old.modelProvider]={...old,completedAt:old.completedAt ?? now,partial:true};
         }
         if (old?.tokenUsage?.totalTokens > (usage?.totalTokens || 0)) {
-          task.turns[key] = { ...old, completedAt: turn.completedAt ?? old.completedAt };
+          task.turns[key] = { ...old, startedAt, completedAt: turn.completedAt ?? old.completedAt,
+            durationMs:turn.durationMs ?? old.durationMs,status:turn.status ?? old.status };
           continue;
         }
-        task.turns[key] = { turnId: turn.turnId, startedAt: turn.startedAt, completedAt: turn.completedAt,
+        task.turns[key] = { turnId: turn.turnId, startedAt, completedAt: turn.completedAt,
+          durationMs:turn.durationMs ?? old?.durationMs,status:turn.status ?? old?.status,
           model: turn.model, reasoningEffort: turn.reasoningEffort, modelProvider: provider,
           providerSource: turn.providerSource, tokenUsage: usage || old?.tokenUsage || null,
           serviceTier: turn.serviceTier, costCredits: provider === 'openai' ? turn.costCredits : null,
@@ -134,7 +172,15 @@ export class ProviderLedger {
   apiSnapshot(providerId,now) {
     const sessions=[],sessionCharts={};
     for (const task of Object.values(this.state.tasks)) {
-      const usage=empty(), intervals=[], counted=new Set(),segments=[]; let partial=false;
+      const usage=empty(), intervals=[], counted=new Set(),segments=[],executions=new Map(); let partial=false;
+      const addExecution = (key, amount, source, spans = [], turnId = null) => {
+        const execution = executions.get(key) || { amount:0, sources:new Set(), spans:[], turnId };
+        execution.amount += amount;
+        execution.sources.add(source);
+        execution.spans.push(...spans);
+        execution.turnId ||= turnId;
+        executions.set(key, execution);
+      };
       for (const [key,turn] of Object.entries(task.turns)) {
         if ((turn.modelProvider || 'unknown') !== providerId || !turn.tokenUsage) continue;
         const observed = [...Object.values(task.observed[key] || {}),
@@ -149,37 +195,48 @@ export class ProviderLedger {
           add(usage,{totalTokens:rest,unclassifiedTokens:rest});
         } else add(usage,turn.tokenUsage);
         counted.add(key); partial ||= turn.partial;
-        const end=turn.completedAt ?? (task.status === 'active' ? now : task.lastSeenAt);
-        intervals.push([turn.startedAt,end]);
-        segments.push({id:`${task.id}:${key}`,turnId:turn.turnId,taskId:task.id,title:task.title,
-          startedAt:turn.startedAt,completedAt:end,elapsedSeconds:Math.max(0,(end-turn.startedAt)/1000),amount,
-          estimated:true,interpolation:'linear'});
+        addExecution(key,amount,'recorded-turn',[],turn.turnId);
       }
       for(const [key,byProvider] of Object.entries(task.prefixes || {})) {
         const prefix=byProvider[providerId];if(!prefix) continue;
         if(task.turns[key]?.modelProvider===providerId && task.turns[key]?.tokenUsage) continue;
         add(usage,prefix.tokenUsage);counted.add(key);partial=true;
-        intervals.push([prefix.startedAt,prefix.completedAt]);
-        segments.push({id:`${task.id}:${key}:prefix`,turnId:prefix.turnId,taskId:task.id,title:task.title,
-          startedAt:prefix.startedAt,completedAt:prefix.completedAt,elapsedSeconds:(prefix.completedAt-prefix.startedAt)/1000,
-          amount:prefix.tokenUsage.totalTokens,estimated:true,interpolation:'linear'});
+        addExecution(key,prefix.tokenUsage.totalTokens,'provider-prefix',[[prefix.startedAt,prefix.completedAt]],prefix.turnId);
       }
       for (const [key,byProvider] of Object.entries(task.observed)) {
         const bucket=byProvider[providerId]; if(!bucket) continue;
         // Partial same-provider records already contain their own sampled suffix.
         if (task.turns[key]?.modelProvider === providerId && task.turns[key]?.tokenUsage) continue;
-        add(usage,bucket);counted.add(key);partial=true;intervals.push(...(bucket.intervals || []));
-        const spans=bucket.intervals || [],seconds=intervalSeconds(spans);
-        spans.forEach(([a,b],i)=>segments.push({id:`${task.id}:${key}:observed:${i}`,turnId:bucket.turnId,
-          taskId:task.id,title:task.title,startedAt:a,completedAt:b,elapsedSeconds:(b-a)/1000,
-          amount:seconds>0?bucket.totalTokens*(b-a)/1000/seconds:0,estimated:true,interpolation:'linear'}));
+        add(usage,bucket);counted.add(key);partial=true;
+        addExecution(key,bucket.totalTokens,'provider-observed',bucket.intervals || [],bucket.turnId);
+      }
+      let completeTiming = executions.size > 0;
+      const observedIntervals = [];
+      for (const [key,execution] of executions) {
+        const observed = mergedIntervals(execution.spans, now);
+        observedIntervals.push(...observed);
+        let timing = executionTiming(task,key,now);
+        if (!timing) {
+          completeTiming = false;
+          if (!observed.length) continue;
+          timing = { startedAt:observed[0][0],completedAt:null,endAt:observed.at(-1)[1],
+            elapsedSeconds:intervalSeconds(observed),durationScope:'observed-intervals',runningIntervals:observed };
+        }
+        intervals.push(...(timing.runningIntervals || [[timing.startedAt,timing.endAt]]));
+        const usageScope = execution.sources.has('provider-observed') ? 'provider-observed'
+          : execution.sources.has('provider-prefix') ? 'provider-prefix' : 'recorded-turn';
+        segments.push({id:`${task.id}:${key}`,turnId:execution.turnId,taskId:task.id,title:task.title,
+          ...timing,amount:execution.amount,usageScope,estimated:true,interpolation:'linear'});
       }
       const current=task.modelProvider === providerId;
       if (!counted.size && !current) continue;
+      partial ||= !completeTiming;
       sessionCharts[task.id]=buildSessionSegments(segments,{unit:'tokens',now,partial});
       sessions.push({ id:task.id,title:task.title,parentThreadId:task.parentThreadId || null,model:task.model,reasoningEffort:task.reasoningEffort,
         status:current ? task.status : 'idle',startedAt:task.startedAt,completedAt:task.completedAt,
-        totalElapsedSeconds:intervalSeconds(intervals), ...usage, turnCount:counted.size,
+        totalElapsedSeconds:intervals.length ? intervalSeconds(intervals) : null,
+        observedElapsedSeconds:intervalSeconds(observedIntervals),durationScope:completeTiming?'full-turn':'partial',
+        ...usage, turnCount:counted.size,
         partial:partial || !counted.size,children:[] });
     }
     sessions.sort((a,b)=>Number(b.status==='active')-Number(a.status==='active') || (b.startedAt||0)-(a.startedAt||0));

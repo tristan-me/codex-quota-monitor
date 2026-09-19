@@ -95,14 +95,19 @@ test('observed OpenAI suffix contributes only its own sampled amount',()=>{
   assert.equal(l.codexThreads()[0].status,'active');
   assert.equal(l.apiSnapshot('unknown',start+1000).summary.totalTokens,100);
 });
-test('sampled duration excludes restart gaps and other-provider intervals',()=>{
+test('full-turn duration survives monitor restarts while observed duration and tokens exclude offline gaps',()=>{
   const t=(p,n)=>thread('task',p,[turn('current',null,n,{completedAt:null})],n);
   const l=new ProviderLedger();l.ingest([t('muse',100)],start,config);
   l.ingest([t('muse',120)],start+1000,config);
   const restored=new ProviderLedger(JSON.parse(JSON.stringify(l.state)));
   restored.ingest([t('muse',200)],start+100000,config);
   restored.ingest([t('muse',210)],start+101000,config);
-  assert.equal(restored.apiSnapshot('muse',start+101000).sessions[0].totalElapsedSeconds,2);
+  const snapshot=restored.apiSnapshot('muse',start+101000);
+  assert.equal(snapshot.sessions[0].totalElapsedSeconds,101);
+  assert.equal(snapshot.sessions[0].observedElapsedSeconds,2);
+  assert.equal(snapshot.sessions[0].totalTokens,30);
+  assert.equal(snapshot.sessionCharts.task.segments.length,1);
+  assert.equal(snapshot.sessionCharts.task.segments[0].durationScope,'full-turn');
 });
 test('a same-provider partial record does not double count its retained prefix',()=>{
   const l=new ProviderLedger();const t=(p,n)=>thread('task','muse',[turn('current',p,n,{completedAt:null,usageCoverage:'partial-turn'})],n);
