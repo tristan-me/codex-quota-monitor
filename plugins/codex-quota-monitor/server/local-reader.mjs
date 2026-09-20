@@ -475,6 +475,42 @@ function confirmExplicitProviderCost(turn, state) {
   turn.observedSessionCostCredits = turn.observedSessionCostTokens = 0;
 }
 
+const pricingContextValue = value => typeof value === "string" && value.trim() ? value.trim() : null;
+
+function pricingUsageMetadata(turn) {
+  const total = tokenUsage(turn.tokenUsage);
+  if (!total || total.totalTokens <= 0) return [];
+  const parts = (Array.isArray(turn.pricingUsage) ? turn.pricingUsage : []).flatMap(part => {
+    const usage = tokenUsage(part?.tokenUsage);
+    return usage?.totalTokens > 0 ? [{
+      model: pricingContextValue(part.model), serviceTier: pricingContextValue(part.serviceTier), tokenUsage: usage,
+    }] : [];
+  });
+  const represented = parts.reduce((sum, part) => addUsage(sum, part.tokenUsage), {
+    inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, totalTokens: 0,
+  });
+  const missing = usageDifference(total, represented);
+  // Older cached metadata can contain tokens without their pricing contexts.
+  // Keep those tokens unknown instead of assigning the turn's latest model.
+  if (!missing) return [{ model: null, serviceTier: null, tokenUsage: total }];
+  if (missing.totalTokens > 0) {
+    const unknown = parts.find(part => part.model === null && part.serviceTier === null);
+    if (unknown) unknown.tokenUsage = addUsage(unknown.tokenUsage, missing);
+    else parts.push({ model: null, serviceTier: null, tokenUsage: missing });
+  }
+  return parts;
+}
+
+function recordPricingIncrement(turn, context, increment) {
+  const parts = pricingUsageMetadata(turn);
+  const model = pricingContextValue(context?.model);
+  const serviceTier = pricingContextValue(context?.serviceTier);
+  const existing = parts.find(part => part.model === model && part.serviceTier === serviceTier);
+  if (existing) existing.tokenUsage = addUsage(existing.tokenUsage, increment);
+  else parts.push({ model, serviceTier, tokenUsage: { ...increment } });
+  turn.pricingUsage = parts;
+}
+
 function parseLegacyEventLine(line, state, sequence) {
   if (sequence === 0) state.sessionHeaderInspected = true;
   if (line.length > MAX_ROLLOUT_LINE_BYTES) return false;
@@ -655,6 +691,10 @@ function parseLegacyEventLine(line, state, sequence) {
       }
       const credits = provider.modelProvider === "openai"
         ? usageCredits(increment, context.model, context.serviceTier) : null;
+      // Preserve the context of this counted increment before a later resume
+      // changes the turn's model or tier. Repeated/zero snapshots never enter
+      // this branch, and a missing context stays explicitly unknown.
+      recordPricingIncrement(turn, context, increment);
       turn.tokenUsage = addUsage(turn.tokenUsage, increment);
       turn.costCredits = (turn.costCredits || 0) + (credits || 0);
       turn.costTokens = (turn.costTokens || 0) + (credits === null ? 0 : increment.totalTokens);
@@ -898,6 +938,7 @@ function executionTurnMetadata(turn, threadModelProvider) {
     reasoningEffort: turn.reasoningEffort || null,
     serviceTier: turn.serviceTier || null,
     tokenUsage: turn.tokenUsage || null,
+    pricingUsage: pricingUsageMetadata(turn),
     usageCoverage: turn.tokenUsage && turn.usageStartSeen && !turn.usagePartial
       ? "recorded-turn" : "partial-turn",
     costCredits: hasCost ? turn.costCredits : null,
@@ -1060,6 +1101,7 @@ function mergeExecutionHistory(projected, rollout) {
       model: candidate.model, reasoningEffort: candidate.reasoningEffort,
       ...provider,
       serviceTier: candidate.serviceTier, tokenUsage: candidate.tokenUsage,
+      pricingUsage: candidate.pricingUsage,
       usageCoverage: candidate.usageCoverage,
       costCredits: candidate.costCredits, costTokens: candidate.costTokens,
       costRateVersion: candidate.costRateVersion, costCoverage: candidate.costCoverage,

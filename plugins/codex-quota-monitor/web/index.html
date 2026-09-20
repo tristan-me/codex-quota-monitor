@@ -117,7 +117,18 @@
               <span id="unknownSessionDetail" class="metric-detail">等待快照</span>
             </article>
           </div>
-          <div id="apiHeroMetrics" class="hero-metrics api-hero-metrics" data-provider-view="api" aria-label="API token 用量" hidden>
+          <div id="apiHeroMetrics" class="hero-metrics api-hero-metrics" data-provider-view="api" aria-label="API 用量与官方参考价估算" hidden>
+            <article id="apiCostCard" class="metric-card metric-card-accent api-cost-card">
+              <span class="metric-label">预计花费（官方价）</span>
+              <strong id="apiEstimatedCost" class="metric-value">待估算</strong>
+              <span id="apiCostCoverage" class="metric-detail api-cost-coverage">暂无可计价的用量记录</span>
+              <p class="api-cost-reference">官方 API 价格仅供参考，实际费用以供应商账单为准。</p>
+              <details id="apiPricingDetails" class="api-pricing-details">
+                <summary>计价说明与来源</summary>
+                <p id="apiPricingNote" hidden></p>
+                <p class="api-pricing-source"><a id="apiPricingSource" target="_blank" rel="noopener noreferrer" hidden>官方 API 定价</a><span id="apiPricingCheckedAt">定价核对日期未记录</span></p>
+              </details>
+            </article>
             <article class="metric-card">
               <span class="metric-label">已记录总输入 token</span>
               <strong id="apiInputTokens" class="metric-value">—</strong>

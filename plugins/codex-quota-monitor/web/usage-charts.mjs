@@ -70,6 +70,30 @@ function tokens(value) {
   return parsed === null ? '—' : `${Math.round(parsed).toLocaleString('zh-CN')} tokens`;
 }
 
+export function formatEstimatedUsd(value) {
+  const parsed = nonnegative(value);
+  if (parsed === null) return '待估算';
+  if (parsed === 0) return 'US$0.00';
+  const exponent = Number(parsed.toExponential().split('e')[1]);
+  const decimals = Math.max(2, Math.ceil(-exponent / 2) * 2);
+  return `US$${decimals <= 100 ? parsed.toFixed(decimals) : parsed.toExponential()}`;
+}
+
+export function formatCostCoverage(estimate) {
+  const priced = nonnegative(estimate?.pricedTokens);
+  const unpriced = nonnegative(estimate?.unpricedTokens);
+  const total = nonnegative(estimate?.totalTokens);
+  if (estimate?.coverage === 'none') {
+    return total > 0 ? `尚未计价 ${tokens(total)}` : '暂无可计价的用量记录';
+  }
+  const parts = [];
+  if (estimate?.coverage === 'partial' || unpriced > 0) parts.push('仅已计价部分');
+  if (priced !== null) parts.push(total !== null
+    ? `已计价 ${Math.round(priced).toLocaleString('zh-CN')} / ${tokens(total)}` : `已计价 ${tokens(priced)}`);
+  if (unpriced > 0) parts.push(`未计价 ${tokens(unpriced)}`);
+  return parts.join(' · ') || (nonnegative(estimate?.usd) === null ? '暂无可计价的用量记录' : '按已记录的可计价用量估算');
+}
+
 function element(tag, className, value) {
   const node = document.createElement(tag);
   if (className) node.className = className;
@@ -319,10 +343,12 @@ export function createSessionChart(chart, { id = '', preferenceKey = id, formatP
       const notes = [linearized(segment) ? '轮次内曲线按执行起止时间线性估算；耗时以实际执行记录为准。' : '',
         tokenUnit && segment.durationScope === 'full-turn' && ['provider-observed', 'provider-prefix'].includes(segment.usageScope)
           ? '耗时为整轮执行，token 仅包含当前供应商已记录部分。' : '',
+        tokenUnit ? '花费按官方 API 参考价估算，计价假设见概览；不代表供应商实际账单。' : '',
         !tokenUnit ? '额度为会话归因估算。' : '', chart?.partial ? '仅包含可用的历史记录。' : ''].filter(Boolean).join('');
       const rows = [
         [segment.durationScope === 'observed-intervals' ? '已观察时长' : '实际执行耗时', formatDuration(segment.elapsedSeconds, '未记录')],
         [tokenUnit ? '本次 token 消耗' : '本次消耗', amount(segment.amount)],
+        ...(tokenUnit ? [['本轮预计花费', formatEstimatedUsd(segment.costEstimate?.usd)], ['计价覆盖', formatCostCoverage(segment.costEstimate)]] : []),
         ...(!tokenUnit ? [['平均每 1% 耗时', formatDuration(segment.secondsPerPercent, '待估算')]] : []),
         ['开始', formatTime(segment.started, true)],
         ['结束', segment.completed === null ? '执行中 / 未记录结束' : formatTime(segment.completed, true)],

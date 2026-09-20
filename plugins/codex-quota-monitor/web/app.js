@@ -2,7 +2,7 @@ import {
   formatTaskPercent, resetDeadline, orderSessionRows, filterSessionRows,
   moveSessionGroup, sessionSortPreference, sessionSortStorageKey,
 } from './dashboard-utils.mjs';
-import { createSessionChart, renderQuotaTrend, renderAttributionScopes } from './usage-charts.mjs';
+import { createSessionChart, renderQuotaTrend, renderAttributionScopes, formatEstimatedUsd, formatCostCoverage } from './usage-charts.mjs';
 (() => {
   'use strict';
 
@@ -369,6 +369,24 @@ import { createSessionChart, renderQuotaTrend, renderAttributionScopes } from '.
   function renderApiOverview(snapshot) {
     const usage = apiUsageFrom(snapshot);
     const summary = isRecord(usage?.summary) ? usage.summary : {};
+    const cost = isRecord(summary.costEstimate) ? summary.costEstimate : {};
+    const pricing = isRecord(usage?.pricing) ? usage.pricing : {};
+    setText('apiEstimatedCost', formatEstimatedUsd(cost.usd));
+    setText('apiCostCoverage', formatCostCoverage(cost));
+    $('apiCostCoverage')?.classList.toggle('is-partial', cost.coverage === 'partial' || finiteNumber(cost.unpricedTokens) > 0);
+    setText('apiPricingNote', safeText(pricing.note, ''), '');
+    setHidden('apiPricingNote', !safeText(pricing.note, ''));
+    const pricingLink = $('apiPricingSource');
+    const source = safeHttpUrl(pricing.source);
+    if (pricingLink) {
+      pricingLink.hidden = !source;
+      if (source) pricingLink.href = source;
+      else pricingLink.removeAttribute('href');
+    }
+    const checkedAt = parseDate(pricing.checkedAt);
+    setText('apiPricingCheckedAt', checkedAt
+      ? `定价核对：${new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' }).format(checkedAt)}`
+      : '定价核对日期未记录');
     setText('apiInputTokens', formatApiTokenCount(summary, 'inputTokens'));
     setText('apiCachedInputTokens', formatApiTokenCount(summary, 'cachedInputTokens'));
     setText('apiOutputTokens', formatApiTokenCount(summary, 'outputTokens'));
@@ -1124,6 +1142,14 @@ import { createSessionChart, renderQuotaTrend, renderAttributionScopes } from '.
       const effort = safeText(session.reasoningEffort, '');
       if (effort) meta.append(textElement('span', 'meta-separator', '·'), textElement('span', 'meta-item', effort));
       row.append(meta);
+
+      const cost = isRecord(session.costEstimate) ? session.costEstimate : {};
+      const costLine = textElement('p', 'api-task-cost', '');
+      const costCoverage = textElement('span', 'api-task-cost-coverage', formatCostCoverage(cost));
+      costCoverage.classList.toggle('is-partial', cost.coverage === 'partial' || finiteNumber(cost.unpricedTokens) > 0);
+      costLine.append(textElement('span', 'api-task-cost-label', '预计花费（官方价）'),
+        textElement('strong', 'api-task-cost-value', formatEstimatedUsd(cost.usd)), costCoverage);
+      row.append(costLine);
 
       const metrics = textElement('dl', 'api-task-metrics', '');
       [

@@ -1,5 +1,7 @@
 import { tokenUsage, usageDifference } from './usage-cost.mjs';
 import { buildSessionSegments } from './chart-data.mjs';
+import { API_PRICING, estimateApiCost, mergeCostEstimates, mergePricingUsage, pricingUsageTotal,
+  pricingUsageDifference, retainPricingUsage, recoverProviderPricing } from './api-cost.mjs';
 
 export const normalizeProvider = value => typeof value === 'string' && /^[a-z0-9][a-z0-9._-]{0,79}$/i.test(value)
   ? value.toLowerCase() === 'openai' ? 'openai' : value : null;
@@ -66,7 +68,8 @@ export class ProviderLedger {
         turns[turnKey({...turn,startedAt})]={turnId:turn.turnId,startedAt,completedAt:turn.completedAt,
           durationMs:turn.durationMs,status:turn.status,
           model:turn.model,reasoningEffort:turn.reasoningEffort,modelProvider:null,
-          providerSource:'legacy-unverified',tokenUsage:usage,partial:turn.costCoverage==='partial-turn'};
+          providerSource:'legacy-unverified',tokenUsage:usage,
+          pricingUsage:retainPricingUsage(usage,turn.pricingUsage,[]),partial:turn.costCoverage==='partial-turn'};
       }
       if(Object.keys(turns).length && !this.state.tasks[id]) this.state.tasks[id]={
         id,title:thread.title||id,model:thread.model,reasoningEffort:thread.reasoningEffort,
@@ -103,13 +106,15 @@ export class ProviderLedger {
         }
         if (old?.tokenUsage?.totalTokens > (usage?.totalTokens || 0)) {
           task.turns[key] = { ...old, startedAt, completedAt: turn.completedAt ?? old.completedAt,
-            durationMs:turn.durationMs ?? old.durationMs,status:turn.status ?? old.status };
+            durationMs:turn.durationMs ?? old.durationMs,status:turn.status ?? old.status,
+            pricingUsage:retainPricingUsage(old.tokenUsage,turn.pricingUsage,old.pricingUsage) };
           continue;
         }
         task.turns[key] = { turnId: turn.turnId, startedAt, completedAt: turn.completedAt,
           durationMs:turn.durationMs ?? old?.durationMs,status:turn.status ?? old?.status,
           model: turn.model, reasoningEffort: turn.reasoningEffort, modelProvider: provider,
           providerSource: turn.providerSource, tokenUsage: usage || old?.tokenUsage || null,
+          pricingUsage:retainPricingUsage(usage || old?.tokenUsage,turn.pricingUsage,old?.pricingUsage),
           serviceTier: turn.serviceTier, costCredits: provider === 'openai' ? turn.costCredits : null,
           costTokens: provider === 'openai' ? turn.costTokens : 0,
           costRateVersion: provider === 'openai' ? turn.costRateVersion : null,
@@ -135,6 +140,10 @@ export class ProviderLedger {
           const bucket = observed[bucketKey];
           const pricedSplit = split && split.totalTokens === delta ? split : null;
           add(bucket, pricedSplit || { totalTokens: delta, unclassifiedTokens: delta });
+          const priceDelta = pricingUsageDifference(latest?.pricingUsage,baseline.pricingUsage);
+          if (pricedSplit && priceDelta && ['inputTokens','cachedInputTokens','outputTokens']
+            .every(key => pricingUsageTotal(priceDelta)[key] === pricedSplit[key]))
+            bucket.pricingUsage = mergePricingUsage(bucket.pricingUsage,priceDelta);
           bucket.until = now;
           bucket.intervals ||= [];
           const last=bucket.intervals.at(-1);
@@ -142,7 +151,14 @@ export class ProviderLedger {
           else bucket.intervals.push([baseline.at,now]);
         }
       }
-      this.baselines.set(thread.id, { key, provider, total, at: now, usage: latest?.tokenUsage });
+      for (const [turnKey,buckets] of Object.entries(task.observed))
+        for (const bucket of Object.values(buckets))
+          bucket.pricingUsage = recoverProviderPricing(bucket,task.turns[turnKey],bucket.pricingUsage);
+      for (const [turnKey,prefixes] of Object.entries(task.prefixes))
+        for (const prefix of Object.values(prefixes))
+          prefix.pricingUsage = recoverProviderPricing(prefix.tokenUsage,task.turns[turnKey],prefix.pricingUsage);
+      this.baselines.set(thread.id, { key, provider, total, at: now, usage: latest?.tokenUsage,
+        pricingUsage:latest?.pricingUsage });
     }
     for (const [id,task] of Object.entries(this.state.tasks)) {
       if (!present.has(id) && task.status === 'active') task.status = 'unknown';
@@ -173,9 +189,11 @@ export class ProviderLedger {
     const sessions=[],sessionCharts={};
     for (const task of Object.values(this.state.tasks)) {
       const usage=empty(), intervals=[], counted=new Set(),segments=[],executions=new Map(); let partial=false;
-      const addExecution = (key, amount, source, spans = [], turnId = null) => {
-        const execution = executions.get(key) || { amount:0, sources:new Set(), spans:[], turnId };
-        execution.amount += amount;
+      const addExecution = (key, partUsage, source, spans = [], turnId = null, pricingUsage = []) => {
+        const execution = executions.get(key) || { amount:0, usage:empty(),pricingUsage:[],sources:new Set(), spans:[], turnId };
+        execution.amount += partUsage.totalTokens;
+        add(execution.usage,partUsage);
+        execution.pricingUsage=mergePricingUsage(execution.pricingUsage,pricingUsage);
         execution.sources.add(source);
         execution.spans.push(...spans);
         execution.turnId ||= turnId;
@@ -187,32 +205,36 @@ export class ProviderLedger {
           ...Object.values(task.prefixes?.[key] || {}).map(p=>p.tokenUsage)];
         // Unknown full-turn usage includes the sampled suffix; remove that
         // suffix from its total so provider views never double count it.
-        let amount=turn.tokenUsage.totalTokens;
+        let partUsage=turn.tokenUsage;
         if (providerId === 'unknown' && observed.length) {
           const rest=Math.max(0,turn.tokenUsage.totalTokens-observed.reduce((n,v)=>n+v.totalTokens,0));
           if (!rest) continue;
-          amount=rest;
-          add(usage,{totalTokens:rest,unclassifiedTokens:rest});
+          partUsage={...empty(),totalTokens:rest,unclassifiedTokens:rest};
+          add(usage,partUsage);
         } else add(usage,turn.tokenUsage);
         counted.add(key); partial ||= turn.partial;
-        addExecution(key,amount,'recorded-turn',[],turn.turnId);
+        addExecution(key,partUsage,'recorded-turn',[],turn.turnId,
+          partUsage===turn.tokenUsage?turn.pricingUsage:[]);
       }
       for(const [key,byProvider] of Object.entries(task.prefixes || {})) {
         const prefix=byProvider[providerId];if(!prefix) continue;
         if(task.turns[key]?.modelProvider===providerId && task.turns[key]?.tokenUsage) continue;
         add(usage,prefix.tokenUsage);counted.add(key);partial=true;
-        addExecution(key,prefix.tokenUsage.totalTokens,'provider-prefix',[[prefix.startedAt,prefix.completedAt]],prefix.turnId);
+        addExecution(key,prefix.tokenUsage,'provider-prefix',[[prefix.startedAt,prefix.completedAt]],prefix.turnId,
+          recoverProviderPricing(prefix.tokenUsage,task.turns[key],prefix.pricingUsage));
       }
       for (const [key,byProvider] of Object.entries(task.observed)) {
         const bucket=byProvider[providerId]; if(!bucket) continue;
         // Partial same-provider records already contain their own sampled suffix.
         if (task.turns[key]?.modelProvider === providerId && task.turns[key]?.tokenUsage) continue;
         add(usage,bucket);counted.add(key);partial=true;
-        addExecution(key,bucket.totalTokens,'provider-observed',bucket.intervals || [],bucket.turnId);
+        addExecution(key,bucket,'provider-observed',bucket.intervals || [],bucket.turnId,
+          recoverProviderPricing(bucket,task.turns[key],bucket.pricingUsage));
       }
       let completeTiming = executions.size > 0;
       const observedIntervals = [];
       for (const [key,execution] of executions) {
+        execution.costEstimate=estimateApiCost(execution.usage,execution.pricingUsage);
         const observed = mergedIntervals(execution.spans, now);
         observedIntervals.push(...observed);
         let timing = executionTiming(task,key,now);
@@ -226,7 +248,7 @@ export class ProviderLedger {
         const usageScope = execution.sources.has('provider-observed') ? 'provider-observed'
           : execution.sources.has('provider-prefix') ? 'provider-prefix' : 'recorded-turn';
         segments.push({id:`${task.id}:${key}`,turnId:execution.turnId,taskId:task.id,title:task.title,
-          ...timing,amount:execution.amount,usageScope,estimated:true,interpolation:'linear'});
+          ...timing,amount:execution.amount,usageScope,costEstimate:execution.costEstimate,estimated:true,interpolation:'linear'});
       }
       const current=task.modelProvider === providerId;
       if (!counted.size && !current) continue;
@@ -237,18 +259,21 @@ export class ProviderLedger {
         totalElapsedSeconds:intervals.length ? intervalSeconds(intervals) : null,
         observedElapsedSeconds:intervalSeconds(observedIntervals),durationScope:completeTiming?'full-turn':'partial',
         ...usage, turnCount:counted.size,
+        costEstimate:mergeCostEstimates([...executions.values()].map(execution=>execution.costEstimate)),
+        unpricedTurnCount:[...executions.values()].filter(execution=>execution.costEstimate.coverage!=='complete').length,
         partial:partial || !counted.size,children:[] });
     }
     sessions.sort((a,b)=>Number(b.status==='active')-Number(a.status==='active') || (b.startedAt||0)-(a.startedAt||0));
     const summary=sessions.reduce((sum,row)=>add(sum,row),empty());
     Object.assign(summary,{taskCount:sessions.length,activeTaskCount:sessions.filter(s=>s.status==='active').length,
-      turnCount:sessions.reduce((n,s)=>n+s.turnCount,0),unpricedTurnCount:sessions.reduce((n,s)=>n+s.turnCount,0)});
+      turnCount:sessions.reduce((n,s)=>n+s.turnCount,0),unpricedTurnCount:sessions.reduce((n,s)=>n+s.unpricedTurnCount,0),
+      costEstimate:mergeCostEstimates(sessions.map(session=>session.costEstimate))});
     return {providerId,providerName:this.catalog(providerId).providers.find(p=>p.id===providerId)?.name || providerId,
-      summary,sessions,sessionCharts,since:Math.min(now,...Object.values(this.state.tasks).flatMap(t=>[
+      pricing:API_PRICING,summary,sessions,sessionCharts,since:Math.min(now,...Object.values(this.state.tasks).flatMap(t=>[
         ...Object.values(t.turns).filter(turn=>(turn.modelProvider||'unknown')===providerId).map(turn=>turn.startedAt),
         ...Object.values(t.observed).flatMap(group=>group[providerId]?[group[providerId].since]:[]),
         ...Object.values(t.prefixes || {}).flatMap(group=>group[providerId]?[group[providerId].startedAt]:[])])),until:now,
-      note:'仅统计本机可读取和已保留的用量；API 金额、余额和限额尚无可信供应商数据。任务切换供应商时，无法确认的历史单列；后续连续采样增量按当时供应商归属并标记部分记录。各任务独立计数，父任务不重复累加子任务。未分类 token 已计入总量，但未列入输入/输出拆分。'};
+      note:'仅统计本机可读取和已保留的用量；官方价预计费用不代表供应商实际账单，余额和限额仍未知。任务切换供应商时，无法确认的历史单列；后续连续采样增量按当时供应商归属并标记部分记录。各任务独立计数，父任务不重复累加子任务。未分类 token 已计入总量，但未列入输入/输出拆分或费用估算。'};
   }
 
   codexThreads() {
